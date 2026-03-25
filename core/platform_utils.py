@@ -17,11 +17,25 @@ class PlatformUtils:
     @staticmethod
     def get_adb_executable():
         """
-        返回当前系统正确的 adb 可执行文件名。
-        在 macOS 尤其是双击 .app 运行时，系统 PATH 可能不包含 /usr/local/bin 等路径，
-        所以我们需要尝试找到 adb 的绝对路径。
+        返回当前系统正确的 adb 可执行文件名或绝对路径。
+        优先寻找打包内置的 adb，如果找不到再去系统寻找。
         """
-        if PlatformUtils.get_os_type() == "win":
+        os_type = PlatformUtils.get_os_type()
+        
+        # 1. 尝试寻找打包内置的 adb
+        # PyInstaller 在运行时会将文件解压到 sys._MEIPASS
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        if os_type == "win":
+            bundled_adb = os.path.join(base_path, "bin", "win", "adb.exe")
+        else:
+            bundled_adb = os.path.join(base_path, "bin", "mac", "adb")
+            
+        if os.path.exists(bundled_adb) and os.access(bundled_adb, os.X_OK):
+            return bundled_adb
+
+        # 2. 如果没有内置（比如是在开发环境下直接运行源代码），退化到系统寻找逻辑
+        if os_type == "win":
             return "adb.exe"
             
         # Mac/Linux 寻找 adb 绝对路径
@@ -32,17 +46,17 @@ class PlatformUtils:
             os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"), # Android Studio
         ]
         
-        # 1. 尝试使用 shutil.which 从当前 PATH 查找
+        # 3. 尝试使用 shutil.which 从当前 PATH 查找
         adb_path = shutil.which("adb")
         if adb_path:
             return adb_path
             
-        # 2. 从常见路径回退查找
+        # 4. 从常见路径回退查找
         for path in common_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
                 
-        # 如果还是找不到，返回 'adb' 听天由命
+        # 5. 终极回退：只能返回 'adb' 听天由命
         return "adb"
 
     @staticmethod

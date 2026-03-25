@@ -32,15 +32,34 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Download ADB (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          curl -O https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+          unzip platform-tools-latest-windows.zip
+          mkdir -p bin/win
+          cp platform-tools/adb.exe bin/win/
+          cp platform-tools/AdbWinApi.dll bin/win/
+          cp platform-tools/AdbWinUsbApi.dll bin/win/
+
+      - name: Download ADB (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          curl -O https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
+          unzip platform-tools-latest-darwin.zip
+          mkdir -p bin/mac
+          cp platform-tools/adb bin/mac/
+          chmod +x bin/mac/adb
+
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --noconsole --onefile --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
+          pyinstaller --noconsole --onefile --add-data "bin/win/adb.exe:bin/win" --add-data "bin/win/AdbWinApi.dll:bin/win" --add-data "bin/win/AdbWinUsbApi.dll:bin/win" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
           
       - name: Build with PyInstaller (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          pyinstaller --noconsole --windowed --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper" main.py
+          pyinstaller --noconsole --windowed --add-data "bin/mac/adb:bin/mac" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper" main.py
           cd dist
           zip -r ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
 
