@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import shutil
 
 class PlatformUtils:
     @staticmethod
@@ -15,8 +16,34 @@ class PlatformUtils:
 
     @staticmethod
     def get_adb_executable():
-        """返回当前系统正确的 adb 可执行文件名"""
-        return "adb.exe" if PlatformUtils.get_os_type() == "win" else "adb"
+        """
+        返回当前系统正确的 adb 可执行文件名。
+        在 macOS 尤其是双击 .app 运行时，系统 PATH 可能不包含 /usr/local/bin 等路径，
+        所以我们需要尝试找到 adb 的绝对路径。
+        """
+        if PlatformUtils.get_os_type() == "win":
+            return "adb.exe"
+            
+        # Mac/Linux 寻找 adb 绝对路径
+        # 常见安装路径：Homebrew (Intel/ARM), Android SDK 等
+        common_paths = [
+            "/opt/homebrew/bin/adb",      # Apple Silicon Homebrew
+            "/usr/local/bin/adb",         # Intel Homebrew
+            os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"), # Android Studio
+        ]
+        
+        # 1. 尝试使用 shutil.which 从当前 PATH 查找
+        adb_path = shutil.which("adb")
+        if adb_path:
+            return adb_path
+            
+        # 2. 从常见路径回退查找
+        for path in common_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                return path
+                
+        # 如果还是找不到，返回 'adb' 听天由命
+        return "adb"
 
     @staticmethod
     def get_local_appdata_path(app_name="VisualADBManager"):
