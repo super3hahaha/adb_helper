@@ -35,20 +35,20 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --noconsole --onefile --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper" main.py
+          pyinstaller --noconsole --onefile --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
           
       - name: Build with PyInstaller (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           pyinstaller --noconsole --windowed --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper" main.py
           cd dist
-          zip -r ADBHelper-macOS.zip ADBHelper.app
+          zip -r ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
 
       - name: Upload Release Asset (Windows)
         if: matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ADBHelper.exe
+          files: dist/ADBHelper-${{ github.ref_name }}.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -56,6 +56,6 @@ jobs:
         if: matrix.os == 'macos-latest'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ADBHelper-macOS.zip
+          files: dist/ADBHelper-macOS-${{ github.ref_name }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
