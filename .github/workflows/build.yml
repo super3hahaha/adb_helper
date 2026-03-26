@@ -54,7 +54,7 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --noconsole --onefile --add-data "bin/win/adb.exe:bin/win" --add-data "bin/win/AdbWinApi.dll:bin/win" --add-data "bin/win/AdbWinUsbApi.dll:bin/win" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
+          pyinstaller --noconsole --onefile --hidden-import win32clipboard --add-data "bin/win/adb.exe:bin/win" --add-data "bin/win/AdbWinApi.dll:bin/win" --add-data "bin/win/AdbWinUsbApi.dll:bin/win" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
           
       - name: Build with PyInstaller (macOS)
         if: matrix.os == 'macos-latest'
