@@ -85,8 +85,9 @@ class PlatformUtils:
             kwargs['capture_output'] = True
         if text:
             kwargs['text'] = True
-            # Subprocess 兼容: Mac 默认 UTF-8, Win 可能是 GBK
-            kwargs['encoding'] = 'gbk' if PlatformUtils.get_os_type() == "win" else 'utf-8'
+            # ADB 输出 UTF-8，但 Windows 系统错误消息是 GBK
+            # 统一用 UTF-8 解码，遇到无法解码的字节用 replace 替换
+            kwargs['encoding'] = 'utf-8'
             kwargs['errors'] = 'replace'
             
         if PlatformUtils.get_os_type() == "win":
