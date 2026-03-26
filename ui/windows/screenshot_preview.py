@@ -485,8 +485,19 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
                 win32clipboard.EmptyClipboard()
                 win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
                 win32clipboard.CloseClipboard()
+            elif sys.platform == "darwin":
+                import subprocess
+                # Mac 下使用 pbcopy 命令复制图片
+                process = subprocess.Popen(
+                    'pbcopy', env={'LANG': 'en_US.UTF-8'}, stdin=subprocess.PIPE)
+                
+                # Mac pbcopy 需要 TIFF 或 PNG 格式
+                mac_output = BytesIO()
+                final_image.convert("RGB").save(mac_output, "PNG")
+                process.communicate(mac_output.getvalue())
+                mac_output.close()
             else:
-                messagebox.showwarning("警告", "复制功能需要安装 pywin32 库 (pip install pywin32)", parent=self)
+                messagebox.showwarning("警告", "当前系统暂不支持直接复制图片到剪贴板", parent=self)
             # 复制成功不弹窗
         except Exception as e:
             messagebox.showerror("错误", f"复制失败: {e}", parent=self)
