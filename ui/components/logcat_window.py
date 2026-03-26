@@ -164,6 +164,10 @@ class LogcatWindow(ctk.CTkToplevel):
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
         self.textbox.configure(state="disabled")
+        # Reset search state since all text is gone
+        self.search_matches.clear()
+        self.current_match_index = -1
+        self.update_search_ui()
 
     def update_logs(self):
         if not self.log_queue:
@@ -504,9 +508,10 @@ class LogcatWindow(ctk.CTkToplevel):
                 current_pos = end_match
                 
             if new_matches_added:
-                # Always track the latest match as current when new logs arrive
-                if self.search_matches:
-                    self.current_match_index = len(self.search_matches) - 1
+                # Only set current_match_index if no match is currently selected
+                # (avoid overriding user's navigation position)
+                if self.current_match_index < 0:
+                    self.current_match_index = 0
                 self.update_search_ui()
                 
         except Exception as e:
