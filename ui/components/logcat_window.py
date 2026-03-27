@@ -152,6 +152,18 @@ class LogcatWindow(ctk.CTkToplevel):
         if self.log_func:
             self.log_func("Logcat stopped", "INFO")
 
+    def reset_for_new_device(self):
+        """设备切换时重置logcat，清空日志并重新获取新设备的日志"""
+        self.stop_logcat()
+        self.clear_logs()
+        self.observed_pids.clear()
+        self.last_pkg_filter = ""
+        self.last_tag_pid = None
+        self.last_timestamp = None
+        if self.log_func:
+            self.log_func(f"Logcat 切换到设备: {self.adb_helper.current_device_id}", "INFO")
+        self.start_logcat()
+
     def on_level_change(self, choice):
         self.stop_logcat()
         self.start_logcat()

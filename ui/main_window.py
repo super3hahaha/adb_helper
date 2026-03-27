@@ -159,6 +159,11 @@ class MainWindow(TkinterDnD_CTk):
         if selected_device and selected_device != "未选择设备":
             self.adb_helper.current_device_id = selected_device
             self.log_message(f"已切换当前操作设备为: {selected_device}", "SUCCESS")
+            # 通知已打开的 Logcat 窗口重置
+            if hasattr(self, 'tab_app'):
+                logcat_win = getattr(self.tab_app, 'logcat_window', None)
+                if logcat_win and logcat_win.winfo_exists():
+                    logcat_win.reset_for_new_device()
 
     def create_tab_selector(self):
         # 创建顶部 Tab 切换器 (Segmented Button)
