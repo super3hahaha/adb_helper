@@ -7,6 +7,7 @@ from ui.utils import optimize_combobox_width
 class ToolsTab(ctk.CTkFrame):
     def __init__(self, parent, adb_helper, config_manager, log_func):
         super().__init__(parent, corner_radius=10)
+        self.main_window = parent
         self.adb_helper = adb_helper
         self.config_manager = config_manager
         self.log = log_func
@@ -107,9 +108,12 @@ class ToolsTab(ctk.CTkFrame):
         
         ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
         
-        ctk.CTkButton(frame_sys, text="清除 Google Play 数据", 
+        ctk.CTkButton(frame_sys, text="清除 Google Play 数据",
                       command=self.action_clear_google_play,
-                      fg_color="#e0a800", hover_color="#b08800").pack(pady=(2, 5), padx=10, fill="x")
+                      fg_color="#e0a800", hover_color="#b08800").pack(pady=2, padx=10, fill="x")
+
+        ctk.CTkButton(frame_sys, text="查询设备系统版本",
+                      command=self.action_query_device_info).pack(pady=(2, 5), padx=10, fill="x")
 
     def _init_simulation_ui(self):
         # 2. 电池模拟
@@ -141,7 +145,10 @@ class ToolsTab(ctk.CTkFrame):
         
         ctk.CTkButton(frame_ringtone, text="试听来电铃声", command=lambda: self.action_play_ringtone("ringtone")).pack(pady=2, padx=10, fill="x")
         ctk.CTkButton(frame_ringtone, text="试听通知铃声", command=lambda: self.action_play_ringtone("notification_sound")).pack(pady=2, padx=10, fill="x")
-        ctk.CTkButton(frame_ringtone, text="试听闹钟铃声", command=lambda: self.action_play_ringtone("alarm_alert")).pack(pady=(2, 5), padx=10, fill="x")
+        ctk.CTkButton(frame_ringtone, text="试听闹钟铃声", command=lambda: self.action_play_ringtone("alarm_alert")).pack(pady=2, padx=10, fill="x")
+
+        self.btn_contact_ringtone = ctk.CTkButton(frame_ringtone, text="试听联系人铃声", command=self.action_contact_ringtone)
+        self.btn_contact_ringtone.pack(pady=(2, 5), padx=10, fill="x")
 
     def action_play_ringtone(self, sound_type):
         def _thread():
@@ -250,6 +257,24 @@ class ToolsTab(ctk.CTkFrame):
             self.log(f"发送文本异常: {e}", "ERROR")
 
     def action_start_wireless_debug(self):
+        # 检查是否已有无线连接的设备
+        try:
+            devices = self.adb_helper.get_connected_devices()
+            wireless_devices = [d for d in devices if ":" in d]
+            if wireless_devices:
+                answer = messagebox.askyesnocancel(
+                    "检测到无线设备",
+                    f"当前已有无线连接的设备：\n{', '.join(wireless_devices)}\n\n是否断开现有无线连接后继续？\n\n是 → 断开并继续\n否 → 不断开，直接继续\n取消 → 取消操作",
+                    parent=self
+                )
+                if answer is None:  # 取消
+                    return
+                if answer:  # 是，先断开
+                    self.adb_helper.stop_wireless_debug()
+                    self.main_window.refresh_device_list()
+        except Exception:
+            pass
+
         def on_ip_found(ip):
             # Show dialog in main thread
             self.after(0, lambda: self._prompt_unplug(ip))
@@ -285,6 +310,7 @@ class ToolsTab(ctk.CTkFrame):
 
     def _on_connect_result(self, success, ip):
         if success:
+            self.after(0, lambda: self.main_window.refresh_device_list())
             self.after(0, lambda: messagebox.showinfo("成功", f"无线调试连接成功！\nIP: {ip}", parent=self))
         else:
             self.after(0, lambda: messagebox.showerror("失败", "无线调试连接失败，请重试。", parent=self))
@@ -296,6 +322,7 @@ class ToolsTab(ctk.CTkFrame):
             elif count == 0:
                  self.after(0, lambda: messagebox.showinfo("提示", "当前没有已连接的无线调试设备", parent=self))
             else:
+                 self.after(0, lambda: self.main_window.refresh_device_list())
                  self.after(0, lambda: messagebox.showinfo("成功", f"已断开 {count} 个无线设备连接", parent=self))
         
         self.adb_helper.stop_wireless_debug(on_complete)
@@ -311,6 +338,41 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
         
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_query_device_info(self):
+        def _thread():
+            try:
+                info = self.adb_helper.get_device_info()
+                self.log(f"查询成功 -> {info}", "SUCCESS")
+            except Exception as e:
+                self.log(f"查询设备信息失败: {e}", "ERROR")
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_contact_ringtone(self):
+        self.btn_contact_ringtone.configure(state="disabled", text="⏳ 正在读取通讯录...")
+
+        def _thread():
+            try:
+                contacts = self.adb_helper.get_all_contacts()
+                if not contacts:
+                    self.log("未能获取到通讯录数据，请检查手机是否为空或被系统拦截", "WARNING")
+                    self.after(0, lambda: self.btn_contact_ringtone.configure(state="normal", text="试听联系人铃声"))
+                    return
+
+                self.log(f"成功获取 {len(contacts)} 个联系人", "SUCCESS")
+
+                def _show_dialog():
+                    self.btn_contact_ringtone.configure(state="normal", text="试听联系人铃声")
+                    from ui.components.contact_selector import ContactRingtoneDialog
+                    ContactRingtoneDialog(self, self.adb_helper, contacts, self.log)
+
+                self.after(0, _show_dialog)
+            except Exception as e:
+                self.log(f"读取通讯录异常: {e}", "ERROR")
+                self.after(0, lambda: self.btn_contact_ringtone.configure(state="normal", text="试听联系人铃声"))
+
         threading.Thread(target=_thread, daemon=True).start()
 
     def open_device_file_manager(self):

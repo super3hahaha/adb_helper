@@ -457,6 +457,6 @@ class AppManageTab(ctk.CTkFrame):
         def _on_enabled():
             self.btn_start_firebase.configure(state="normal", text="开启 Firebase 调试并抓取")
             from ui.components.firebase_window import FirebaseWindow
-            FirebaseWindow(self.winfo_toplevel(), self.adb_helper, pkg)
+            self.firebase_window = FirebaseWindow(self.winfo_toplevel(), self.adb_helper, pkg)
 
         threading.Thread(target=_thread, daemon=True).start()

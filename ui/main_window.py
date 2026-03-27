@@ -38,6 +38,9 @@ class MainWindow(TkinterDnD_CTk):
         if PlatformUtils.get_os_type() == "mac":
             self.bind_mac_shortcuts()
 
+        # 主窗口最小化时，保持子窗口显示
+        self.bind("<Unmap>", self._on_minimize)
+
         # 设置主题
         ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
         ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
@@ -154,16 +157,26 @@ class MainWindow(TkinterDnD_CTk):
             self.adb_helper.current_device_id = new_device
             self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
 
+    def _on_minimize(self, event):
+        """主窗口最小化时，保持子窗口(Logcat/Firebase等)正常显示"""
+        if event.widget == self and self.state() == "iconic":
+            for w in self.winfo_children():
+                if isinstance(w, ctk.CTkToplevel) and w.winfo_exists():
+                    w.after(10, w.deiconify)
+
     def on_device_change(self, selected_device):
         """用户手动切换设备"""
         if selected_device and selected_device != "未选择设备":
             self.adb_helper.current_device_id = selected_device
             self.log_message(f"已切换当前操作设备为: {selected_device}", "SUCCESS")
-            # 通知已打开的 Logcat 窗口重置
+            # 通知已打开的 Logcat / Firebase 窗口重置
             if hasattr(self, 'tab_app'):
                 logcat_win = getattr(self.tab_app, 'logcat_window', None)
                 if logcat_win and logcat_win.winfo_exists():
                     logcat_win.reset_for_new_device()
+                firebase_win = getattr(self.tab_app, 'firebase_window', None)
+                if firebase_win and firebase_win.winfo_exists():
+                    firebase_win.reset_for_new_device()
 
     def create_tab_selector(self):
         # 创建顶部 Tab 切换器 (Segmented Button)

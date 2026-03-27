@@ -140,6 +140,22 @@ class ADBHelper:
         #     raise NoDeviceConnectedError(f"设备 {self.current_device_id} 已断开连接")
         return True
 
+    def get_device_info(self):
+        """查询设备型号、系统版本和 API 级别"""
+        self.check_device()
+
+        props = {
+            "model": "ro.product.model",
+            "release": "ro.build.version.release",
+            "sdk": "ro.build.version.sdk",
+        }
+        results = {}
+        for key, prop in props.items():
+            success, output = self.execute_adb_command(["adb", "shell", "getprop", prop])
+            results[key] = output.strip() if success and output else "未知"
+
+        return f"设备型号: {results['model']}, 系统版本: Android {results['release']} (API {results['sdk']})"
+
     def send_text(self, text):
         if text:
             text_escaped = text.replace(" ", "%s") 
@@ -595,6 +611,64 @@ class ADBHelper:
                 pass
             self.firebase_logcat_process = None
             self.log("已停止 Firebase 专属日志抓取", "INFO")
+
+    # --- Contacts ---
+
+    def get_all_contacts(self):
+        """获取设备通讯录中所有联系人姓名"""
+        self.check_device()
+        success, output = self.execute_adb_command([
+            "adb", "shell", "content", "query",
+            "--uri", "content://com.android.contacts/contacts",
+            "--projection", "display_name"
+        ])
+        if not success or not output:
+            return []
+
+        names = []
+        for line in output.split('\n'):
+            # 格式: Row: 0 display_name=张三
+            match = re.search(r'display_name=(.+)', line)
+            if match:
+                name = match.group(1).strip()
+                if name and name not in names:
+                    names.append(name)
+        names.sort(key=lambda n: n.lower())
+        return names
+
+    def play_contact_ringtone(self, contact_name):
+        """播放指定联系人的自定义铃声"""
+        self.check_device()
+        # 查询联系人的 custom_ringtone
+        success, output = self.execute_adb_command([
+            "adb", "shell", "content", "query",
+            "--uri", "content://com.android.contacts/contacts",
+            "--projection", "custom_ringtone",
+            "--where", f"display_name=\\'{contact_name}\\'"
+        ])
+        if not success or not output:
+            return False, "查询联系人铃声失败"
+
+        # 提取 URI
+        match = re.search(r'custom_ringtone=(.+)', output)
+        if not match:
+            return False, f"未找到联系人 {contact_name} 的铃声数据"
+
+        uri = match.group(1).strip()
+        if not uri or uri == "NULL":
+            return False, f"联系人 {contact_name} 未设置自定义铃声"
+
+        # 清理 URI
+        if "0@" in uri:
+            uri = uri.replace("0@", "")
+
+        # 播放
+        self.execute_adb_command([
+            "adb", "shell", "am", "start",
+            "-a", "android.intent.action.VIEW",
+            "-d", uri, "-t", "audio/*"
+        ])
+        return True, f"正在播放 {contact_name} 的铃声"
 
     # --- Screen Record ---
 

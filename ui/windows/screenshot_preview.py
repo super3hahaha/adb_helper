@@ -30,7 +30,7 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.after(10, lambda: (self.lift(), self.focus_force()))
 
         # 标注状态
-        self.drawing_mode = None # None, 'rect', 'arrow'
+        self.drawing_mode = "rect" # None, 'rect', 'arrow'
         self.current_color = "red"
         self.line_width = 9
         self.shapes = [] # List of dict: {'type': 'rect'|'arrow', 'coords': (x1,y1,x2,y2), 'color': str, 'width': int}
@@ -51,6 +51,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             scale_h = avail_h / img_h
             
             self.current_scale = min(scale_w, scale_h, 1.0)
+            self.img_offset_x = 0
+            self.img_offset_y = 0
             
             self.tk_image = None
         except Exception as e:
@@ -129,6 +131,7 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_move)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end) # 新增释放事件
+        self.canvas.bind("<Configure>", self.on_canvas_resize) # 绑定尺寸变化事件
 
         # 2. 底部控制栏
         self.control_frame = ctk.CTkFrame(self)
@@ -141,6 +144,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.btn_save.pack(side="right", padx=10, pady=10)
 
         ctk.CTkButton(self.control_frame, text="另存为...", command=self.save_as, fg_color="#2d7d46", hover_color="#1e5c32").pack(side="right", padx=10, pady=10)
+
+        ctk.CTkButton(self.control_frame, text="复制", command=self.copy_to_clipboard, fg_color="#2d7d46", hover_color="#1e5c32").pack(side="right", padx=10, pady=10)
 
         # 快捷键绑定
         from core.platform_utils import PlatformUtils
@@ -155,8 +160,9 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.bind(f"{ctrl_key}S>", lambda e: self.save_to_temp())
         
         # 初始显示
+        self.update_idletasks()
         self.update_image()
-        self.set_mode(None) # 默认平移
+        self.set_mode("rect") # 默认矩形+红色
         
         # 窗口关闭清理
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -245,7 +251,7 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             
             # 刷新显示
             self.update_image()
-            self.set_mode(None)  # 重置为平移模式
+            self.set_mode("rect")  # 重置为矩形模式
         except Exception as e:
             messagebox.showerror("错误", f"无法加载新图片: {e}", parent=self)
 
@@ -275,6 +281,17 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
                 self.log_func(f"保存截图失败: {e}", "ERROR")
             messagebox.showerror("错误", f"保存失败: {e}", parent=self)
 
+    def on_canvas_resize(self, event):
+        # 仅当画布尺寸真正改变时更新，避免死循环
+        if hasattr(self, '_last_canvas_size') and self._last_canvas_size == (event.width, event.height):
+            return
+        self._last_canvas_size = (event.width, event.height)
+        
+        # 延迟更新，避免频繁重绘
+        if hasattr(self, '_resize_timer'):
+            self.after_cancel(self._resize_timer)
+        self._resize_timer = self.after(50, self.update_image)
+
     def update_image(self):
         if not self.original_image: return
         
@@ -283,14 +300,29 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         new_width = int(width * self.current_scale)
         new_height = int(height * self.current_scale)
         
+        # 获取 Canvas 当前尺寸
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        
+        # 如果窗口尚未完全绘制，宽高可能很小
+        if canvas_width < 10 or canvas_height < 10:
+            self.img_offset_x = 0
+            self.img_offset_y = 0
+            scroll_w, scroll_h = new_width, new_height
+        else:
+            self.img_offset_x = max(0, (canvas_width - new_width) // 2)
+            self.img_offset_y = max(0, (canvas_height - new_height) // 2)
+            scroll_w = max(canvas_width, new_width)
+            scroll_h = max(canvas_height, new_height)
+        
         # 重新采样
         resized_image = self.original_image.resize((new_width, new_height), Image.LANCZOS)
         self.tk_image = ImageTk.PhotoImage(resized_image)
         
         # 更新 Canvas
         self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
-        self.canvas.configure(scrollregion=(0, 0, new_width, new_height))
+        self.canvas.create_image(self.img_offset_x, self.img_offset_y, anchor="nw", image=self.tk_image)
+        self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
         
         # 重绘所有标注
         self.draw_shapes_on_canvas()
@@ -298,10 +330,10 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
     def draw_shapes_on_canvas(self):
         for shape in self.shapes:
             # 将原始坐标转换为当前缩放后的 Canvas 坐标
-            x1 = shape['coords'][0] * self.current_scale
-            y1 = shape['coords'][1] * self.current_scale
-            x2 = shape['coords'][2] * self.current_scale
-            y2 = shape['coords'][3] * self.current_scale
+            x1 = shape['coords'][0] * self.current_scale + self.img_offset_x
+            y1 = shape['coords'][1] * self.current_scale + self.img_offset_y
+            x2 = shape['coords'][2] * self.current_scale + self.img_offset_x
+            y2 = shape['coords'][3] * self.current_scale + self.img_offset_y
             
             # display_width = max(1, int(shape['width'] * self.current_scale))
             display_width = max(1, int(shape['width'] * self.current_scale))
@@ -324,8 +356,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             # 记录起始点 (转换为图片原始坐标)
             canvas_x = self.canvas.canvasx(event.x)
             canvas_y = self.canvas.canvasy(event.y)
-            img_x = canvas_x / self.current_scale
-            img_y = canvas_y / self.current_scale
+            img_x = (canvas_x - self.img_offset_x) / self.current_scale
+            img_y = (canvas_y - self.img_offset_y) / self.current_scale
             self.start_pos = (img_x, img_y)
         else:
             self.canvas.scan_mark(event.x, event.y)
@@ -341,8 +373,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             cur_canvas_x = self.canvas.canvasx(event.x)
             cur_canvas_y = self.canvas.canvasy(event.y)
             
-            start_canvas_x = start_img_x * self.current_scale
-            start_canvas_y = start_img_y * self.current_scale
+            start_canvas_x = start_img_x * self.current_scale + self.img_offset_x
+            start_canvas_y = start_img_y * self.current_scale + self.img_offset_y
             
             # 显示时的线宽
             display_width = max(1, int(self.line_width * self.current_scale))
@@ -370,8 +402,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             cur_canvas_x = self.canvas.canvasx(event.x)
             cur_canvas_y = self.canvas.canvasy(event.y)
             
-            end_img_x = cur_canvas_x / self.current_scale
-            end_img_y = cur_canvas_y / self.current_scale
+            end_img_x = (cur_canvas_x - self.img_offset_x) / self.current_scale
+            end_img_y = (cur_canvas_y - self.img_offset_y) / self.current_scale
             
             # 保存形状数据 (原始坐标)
             shape = {

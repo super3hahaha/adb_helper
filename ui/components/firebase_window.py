@@ -34,12 +34,11 @@ class FirebaseWindow(ctk.CTkToplevel):
         frame_toolbar = ctk.CTkFrame(self)
         frame_toolbar.pack(fill="x", padx=10, pady=5)
         
-        # 日志级别
-        ctk.CTkLabel(frame_toolbar, text="级别:").pack(side="left", padx=5)
-        self.combo_level = ctk.CTkComboBox(frame_toolbar, values=["Verbose", "Debug", "Info", "Warn", "Error"], width=80)
-        self.combo_level.set("Verbose")
-        self.combo_level.pack(side="left", padx=5)
-        
+        # 置于最前按钮
+        self.is_topmost = False
+        self.btn_topmost = ctk.CTkButton(frame_toolbar, text="置于最前", width=80, command=self.toggle_topmost)
+        self.btn_topmost.pack(side="left", padx=5)
+
         # 关键字过滤 (只显示包含该关键字的行)
         ctk.CTkLabel(frame_toolbar, text="过滤:").pack(side="left", padx=5)
         self.entry_filter = ctk.CTkEntry(frame_toolbar, width=250)
@@ -173,6 +172,24 @@ class FirebaseWindow(ctk.CTkToplevel):
             
         # 每 100ms 轮询一次
         self.after(100, self.update_logs)
+
+    def toggle_topmost(self):
+        self.is_topmost = not self.is_topmost
+        self.attributes("-topmost", self.is_topmost)
+        if self.is_topmost:
+            self.btn_topmost.configure(fg_color="#2d7d46", hover_color="#1e5c32")
+        else:
+            self.btn_topmost.configure(fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"], hover_color=ctk.ThemeManager.theme["CTkButton"]["hover_color"])
+
+    def reset_for_new_device(self):
+        """设备切换时重置，重新获取新设备的 firebase 日志"""
+        self.adb_helper.stop_firebase_logcat()
+        self.clear_logs()
+        try:
+            self.adb_helper.enable_firebase_debug(self.package_name)
+            self.log_queue = self.adb_helper.start_firebase_logcat()
+        except Exception:
+            self.log_queue = None
 
     def on_close(self):
         self.is_running = False
