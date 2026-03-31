@@ -37,10 +37,28 @@
 
 ---
 
+## 🪟 Windows 用户安装教程
+
+**第一步：下载与运行**
+1. 从 [Releases](https://github.com/super3hahaha/adb_helper/releases) 页面下载最新的 `ADBHelper-vX.X.X.exe` 文件。
+2. 双击运行即可，无需安装。
+
+**第二步：解除 Windows SmartScreen 拦截**
+
+由于本软件为开源免费软件，未经过微软代码签名，首次运行时 Windows Defender SmartScreen 会弹出蓝色警告窗口：
+
+*   提示 **"Windows 已保护你的电脑"**
+    1. 点击弹窗中的 **"更多信息"** 链接。
+    2. 点击出现的 **"仍要运行"** 按钮即可正常启动。
+
+> 此提示仅在首次运行时出现，之后不会再弹出。
+
+---
+
 ## 🍏 Mac 用户安装教程
 
 **第一步：解压与安装**
-1. 下载 `ADBHelper-macOS.zip` 文件。
+1. 从 [Releases](https://github.com/super3hahaha/adb_helper/releases) 页面下载最新的 `ADBHelper-macOS-vX.X.X.zip` 文件。
 2. 双击解压该文件，你会得到一个带图标的 `ADBHelper.app` （在 Mac 上可能只显示 `ADBHelper`）。
 3. **关键操作：** 将提取出来的 `ADBHelper` 拖拽到 Mac 的 **“应用程序”（Applications）** 文件夹中。
 
