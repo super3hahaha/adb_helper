@@ -15,7 +15,8 @@ class APKManagerTab(ctk.CTkFrame):
         self.log = log_func
         
         self.tree_item_map = {}
-        
+        self.hidden_apks = set(self.config_manager.get_hidden_apks())
+
         self.setup_ui()
         # Initial load
         self.refresh_apk_manager_list()
@@ -64,6 +65,9 @@ class APKManagerTab(ctk.CTkFrame):
                         font=("Arial", 10, "bold"))
         style.map("Treeview", background=[('selected', '#1f6aa5')])
 
+        # 隐藏文件的灰色标签
+        self.apk_tree_tag_hidden_fg = "#999999" if is_light else "#666666"
+
         columns = ("filename", "size", "mtime")
         self.apk_tree = ttk.Treeview(frame_list, columns=columns, show="headings", selectmode="extended")
         
@@ -86,7 +90,7 @@ class APKManagerTab(ctk.CTkFrame):
         frame_bottom = ctk.CTkFrame(self, fg_color="transparent")
         frame_bottom.grid(row=2, column=0, sticky="ew", padx=10, pady=(5, 10))
 
-        ctk.CTkButton(frame_bottom, text="全选 / 取消全选", command=self.toggle_select_all_apks, width=120, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE")).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(frame_bottom, text="隐藏 / 取消隐藏", command=self.toggle_hide_apks, width=120, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE")).pack(side="left", padx=(0, 10))
         ctk.CTkButton(frame_bottom, text="刷新列表", command=self.refresh_apk_manager_list, width=100, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE")).pack(side="left", padx=(0, 10))
         
         ctk.CTkButton(frame_bottom, text="删除选中的 APK", command=self.delete_selected_apks, fg_color="#c42b1c", hover_color="#8a1f15").pack(side="right", padx=0)
@@ -124,31 +128,43 @@ class APKManagerTab(ctk.CTkFrame):
             self.clear_apk_tree()
             return
 
-        # Scan APKs
+        # Scan APKs (递归扫描子文件夹，最大深度3层)
         self.clear_apk_tree()
         self.tree_item_map = {}
-        
+
         try:
-            files = os.listdir(apk_dir)
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(apk_dir, x)), reverse=True)
-            
-            count = 0
-            for f in files:
-                if f.lower().endswith(".apk"):
-                    if keyword and keyword.lower() not in f.lower():
-                        continue
-                        
-                    full_path = os.path.join(apk_dir, f)
-                    size_mb = os.path.getsize(full_path) / (1024 * 1024)
-                    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(full_path)).strftime('%Y-%m-%d %H:%M')
-                    
-                    item_id = self.apk_tree.insert("", "end", values=(f, f"{size_mb:.2f}", mtime))
-                    self.tree_item_map[item_id] = full_path
-                    count += 1
-            
-            if count == 0:
-                pass # Tree is empty
-                
+            base_path = os.path.normpath(apk_dir)
+            max_depth = 3
+            apk_items = []  # [(显示名, 绝对路径, size, mtime_ts)]
+
+            for root, dirs, files in os.walk(base_path):
+                depth = root.replace(base_path, "").count(os.sep)
+                if depth >= max_depth:
+                    dirs.clear()
+                    continue
+                for f in files:
+                    if f.lower().endswith(".apk"):
+                        if keyword and keyword.lower() not in f.lower():
+                            continue
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, base_path)
+                        size = os.path.getsize(full_path)
+                        mtime_ts = os.path.getmtime(full_path)
+                        apk_items.append((rel_path, full_path, size, mtime_ts))
+
+            # 按修改时间降序排序
+            apk_items.sort(key=lambda x: x[3], reverse=True)
+
+            # 配置隐藏标签样式
+            self.apk_tree.tag_configure("hidden", foreground=self.apk_tree_tag_hidden_fg)
+
+            for rel_path, full_path, size, mtime_ts in apk_items:
+                size_mb = size / (1024 * 1024)
+                mtime = datetime.datetime.fromtimestamp(mtime_ts).strftime('%Y-%m-%d %H:%M')
+                tags = ("hidden",) if rel_path in self.hidden_apks else ()
+                item_id = self.apk_tree.insert("", "end", values=(rel_path, f"{size_mb:.2f}", mtime), tags=tags)
+                self.tree_item_map[item_id] = full_path
+
         except Exception as e:
             self.log(f"读取 APK 列表失败: {e}", "ERROR")
 
@@ -157,16 +173,42 @@ class APKManagerTab(ctk.CTkFrame):
             self.apk_tree.delete(item)
         self.tree_item_map = {}
 
-    def toggle_select_all_apks(self):
-        items = self.apk_tree.get_children()
-        if not items: return
-        
-        # Check if all selected
+    def toggle_hide_apks(self):
         selection = self.apk_tree.selection()
-        if len(selection) == len(items):
-            self.apk_tree.selection_remove(*items)
-        else:
-            self.apk_tree.selection_set(*items)
+        if not selection:
+            messagebox.showwarning("提示", "请先选择要隐藏/取消隐藏的 APK", parent=self)
+            return
+
+        hidden_count = 0
+        shown_count = 0
+        for item_id in selection:
+            values = self.apk_tree.item(item_id, "values")
+            rel_path = values[0]
+            if rel_path in self.hidden_apks:
+                # 取消隐藏
+                self.hidden_apks.discard(rel_path)
+                self.apk_tree.item(item_id, tags=())
+                shown_count += 1
+            else:
+                # 隐藏
+                self.hidden_apks.add(rel_path)
+                self.apk_tree.item(item_id, tags=("hidden",))
+                hidden_count += 1
+
+        # 持久化
+        self.config_manager.set_hidden_apks(list(self.hidden_apks))
+
+        # 同步刷新智能安装列表
+        main_window = self.winfo_toplevel()
+        if hasattr(main_window, 'tab_app'):
+            main_window.tab_app.refresh_apk_list()
+
+        msg_parts = []
+        if hidden_count:
+            msg_parts.append(f"隐藏 {hidden_count} 个")
+        if shown_count:
+            msg_parts.append(f"取消隐藏 {shown_count} 个")
+        self.log(f"APK {'，'.join(msg_parts)}", "SUCCESS")
 
     def delete_selected_apks(self):
         selection = self.apk_tree.selection()
@@ -189,3 +231,7 @@ class APKManagerTab(ctk.CTkFrame):
         
         self.log(f"已删除 {count} 个 APK 文件", "SUCCESS")
         self.refresh_apk_manager_list()
+        # 同步刷新智能安装列表
+        main_window = self.winfo_toplevel()
+        if hasattr(main_window, 'tab_app'):
+            main_window.tab_app.refresh_apk_list()

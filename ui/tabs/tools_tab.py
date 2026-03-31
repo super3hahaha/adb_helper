@@ -116,10 +116,14 @@ class ToolsTab(ctk.CTkFrame):
                       command=self.action_query_device_info).pack(pady=(2, 5), padx=10, fill="x")
 
     def _init_simulation_ui(self):
+        # 唤起系统时间设置
+        ctk.CTkButton(self.container_simulation, text="唤起系统时间与日期设置",
+                      command=self.action_open_date_settings).pack(pady=5, padx=10, fill="x")
+
         # 2. 电池模拟
         frame_bat = ctk.CTkFrame(self.container_simulation)
         frame_bat.pack(pady=5, padx=10, fill="x")
-        
+
         ctk.CTkLabel(frame_bat, text="电池状态模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
         
         ctk.CTkButton(frame_bat, text="模拟低电量 (10%)", command=self.adb_helper.sim_low_battery).pack(pady=2, padx=10, fill="x")
@@ -338,6 +342,15 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
         
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_open_date_settings(self):
+        def _thread():
+            try:
+                self.adb_helper.open_date_settings()
+                self.log("已唤起设备系统时间设置页", "SUCCESS")
+            except Exception as e:
+                self.log(f"唤起时间设置失败: {e}", "ERROR")
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_query_device_info(self):

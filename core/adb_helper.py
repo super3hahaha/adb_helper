@@ -156,6 +156,21 @@ class ADBHelper:
 
         return f"设备型号: {results['model']}, 系统版本: Android {results['release']} (API {results['sdk']})"
 
+    def force_stop_app(self, package_name):
+        """强制停止应用"""
+        self.check_device()
+        return self.execute_adb_command(["adb", "shell", "am", "force-stop", package_name])
+
+    def kill_process(self, package_name):
+        """杀死应用进程"""
+        self.check_device()
+        return self.execute_adb_command(["adb", "shell", "am", "kill", package_name])
+
+    def open_date_settings(self):
+        """唤起系统时间与日期设置"""
+        self.check_device()
+        return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.DATE_SETTINGS"])
+
     def send_text(self, text):
         if text:
             text_escaped = text.replace(" ", "%s") 
@@ -639,24 +654,26 @@ class ADBHelper:
     def play_contact_ringtone(self, contact_name):
         """播放指定联系人的自定义铃声"""
         self.check_device()
-        # 查询联系人的 custom_ringtone
+        # 查询所有联系人的 display_name 和 custom_ringtone（避免 --where 空格问题）
         success, output = self.execute_adb_command([
             "adb", "shell", "content", "query",
             "--uri", "content://com.android.contacts/contacts",
-            "--projection", "custom_ringtone",
-            "--where", f"display_name=\\'{contact_name}\\'"
+            "--projection", "display_name:custom_ringtone"
         ])
         if not success or not output:
             return False, "查询联系人铃声失败"
 
-        # 提取 URI
-        match = re.search(r'custom_ringtone=(.+)', output)
-        if not match:
-            return False, f"未找到联系人 {contact_name} 的铃声数据"
+        # 在 Python 端匹配目标联系人
+        uri = None
+        for line in output.split('\n'):
+            if f"display_name={contact_name}" in line:
+                match = re.search(r'custom_ringtone=(.+)', line)
+                if match:
+                    uri = match.group(1).strip()
+                break
 
-        uri = match.group(1).strip()
         if not uri or uri == "NULL":
-            return False, f"联系人 {contact_name} 未设置自定义铃声"
+            return False, f"联系人 {contact_name} 未设置自定义铃声（使用默认铃声）"
 
         # 清理 URI
         if "0@" in uri:

@@ -65,14 +65,18 @@ class AppManageTab(ctk.CTkFrame):
         
         ctk.CTkButton(frame_clear_wrapper, text="清除 App 数据", command=self.action_clear_data, fg_color="#e0a800", hover_color="#b08800", height=28, anchor="e").pack(side="left", expand=True, fill="x")
 
-        # 第二行：截图与录屏
-        self.btn_screenshot = ctk.CTkButton(frame_actions, text="截取屏幕", command=self.action_take_screenshot, height=28)
-        self.btn_screenshot.grid(row=1, column=0, sticky="ew", padx=(2, 2), pady=2)
-        self.btn_screen_record = ctk.CTkButton(frame_actions, text="录制屏幕", command=self.action_screen_record, height=28)
-        self.btn_screen_record.grid(row=1, column=1, sticky="ew", padx=(2, 2), pady=2)
+        # 第二行：强制停止与启动App
+        ctk.CTkButton(frame_actions, text="启动 App (Launch)", command=self.action_launch_app, fg_color="#3B8ED0", hover_color="#36719F", height=28).grid(row=1, column=0, sticky="ew", padx=(2, 2), pady=2)
+        ctk.CTkButton(frame_actions, text="强制停止 (Force Stop)", command=self.action_force_stop, fg_color="#e0a800", hover_color="#b08800", height=28).grid(row=1, column=1, sticky="ew", padx=(2, 2), pady=2)
 
-        # 第三行：Logcat
-        ctk.CTkButton(frame_actions, text="查看 Logcat (实时监控)", command=self.action_view_logcat, height=28, fg_color="#3B8ED0", hover_color="#36719F").grid(row=2, column=0, columnspan=2, sticky="ew", padx=(2, 2), pady=2)
+        # 第三行：截图与录屏
+        self.btn_screenshot = ctk.CTkButton(frame_actions, text="截取屏幕", command=self.action_take_screenshot, height=28)
+        self.btn_screenshot.grid(row=2, column=0, sticky="ew", padx=(2, 2), pady=2)
+        self.btn_screen_record = ctk.CTkButton(frame_actions, text="录制屏幕", command=self.action_screen_record, height=28)
+        self.btn_screen_record.grid(row=2, column=1, sticky="ew", padx=(2, 2), pady=2)
+
+        # 第四行：Logcat
+        ctk.CTkButton(frame_actions, text="查看 Logcat (实时监控)", command=self.action_view_logcat, height=28, fg_color="#3B8ED0", hover_color="#36719F").grid(row=3, column=0, columnspan=2, sticky="ew", padx=(2, 2), pady=2)
 
         # 3. 智能安装区域 (紧凑版)
         frame_install = ctk.CTkFrame(self)
@@ -89,7 +93,9 @@ class AppManageTab(ctk.CTkFrame):
         optimize_combobox_width(self.apk_selector, offset=170)
         self.apk_selector.set("未找到匹配的 APK")
         
-        ctk.CTkButton(frame_apk_select, text="刷新", command=self.refresh_apk_list, width=60, height=28, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE")).pack(side="right")
+        self.btn_refresh_apk = ctk.CTkButton(frame_apk_select, text="刷新", command=self.refresh_apk_list, width=60, height=28, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE"))
+        self.btn_refresh_apk.pack(side="right")
+        self.apk_path_map = {}  # {显示名: 绝对路径}
 
         # 安装按钮
         ctk.CTkButton(frame_install, text="安装选中的 APK", command=self.action_install_apk, height=28).pack(pady=(5, 5), padx=5, fill="x")
@@ -242,6 +248,33 @@ class AppManageTab(ctk.CTkFrame):
         except Exception as e:
             self.log(f"清除数据异常: {e}", "ERROR")
 
+    def action_force_stop(self):
+        if not self.current_app_pkg:
+            messagebox.showwarning("提示", "请先选择一个 App", parent=self)
+            return
+        pkg = self.current_app_pkg
+        def _thread():
+            try:
+                self.adb_helper.force_stop_app(pkg)
+                self.log(f"已强制停止 {pkg}", "SUCCESS")
+                self._handle_auto_launch(pkg)
+            except Exception as e:
+                self.log(f"强制停止失败: {e}", "ERROR")
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_launch_app(self):
+        if not self.current_app_pkg:
+            messagebox.showwarning("提示", "请先选择一个 App", parent=self)
+            return
+        pkg = self.current_app_pkg
+        def _thread():
+            try:
+                self.adb_helper.launch_app(pkg)
+                self.log(f"已启动 {pkg}", "SUCCESS")
+            except Exception as e:
+                self.log(f"启动 App 失败: {e}", "ERROR")
+        threading.Thread(target=_thread, daemon=True).start()
+
     def show_clear_data_help(self):
         help_window = ctk.CTkToplevel(self)
         help_window.title("💡 为什么清除数据/执行命令会失败？")
@@ -390,36 +423,60 @@ class AppManageTab(ctk.CTkFrame):
             self.apk_selector.configure(values=[])
             return
 
-        # Find matching APKs
+        # 禁用按钮，显示扫描状态
+        self.btn_refresh_apk.configure(state="disabled", text="扫描中...")
+
         keyword = ""
-        # Find current app keyword
         apps = self.config_manager.get_apps()
         for app in apps:
             if app['pkg'] == self.current_app_pkg:
                 keyword = app.get('keyword', "")
                 break
-        
-        apks = []
-        try:
-            files = os.listdir(apk_dir)
-            # Sort by modification time desc
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(apk_dir, x)), reverse=True)
-            
-            for f in files:
-                if f.lower().endswith(".apk"):
-                    if keyword and keyword.lower() in f.lower():
-                        apks.append(f)
-                    elif not keyword:
-                        apks.append(f)
-        except Exception as e:
-            self.log(f"读取 APK 目录失败: {e}", "ERROR")
 
-        if apks:
-            self.apk_selector.configure(values=apks)
-            self.apk_selector.set(apks[0])
-        else:
-            self.apk_selector.configure(values=[])
-            self.apk_selector.set("未找到匹配的 APK" if keyword else "目录中无 APK")
+        def _scan():
+            apk_items = []  # [(显示名, 绝对路径, mtime)]
+            max_depth = 3
+            try:
+                base_path = os.path.normpath(apk_dir)
+                for root, dirs, files in os.walk(base_path):
+                    # 限制递归深度
+                    depth = root.replace(base_path, "").count(os.sep)
+                    if depth >= max_depth:
+                        dirs.clear()
+                        continue
+                    for f in files:
+                        if f.lower().endswith(".apk"):
+                            if keyword and keyword.lower() not in f.lower():
+                                continue
+                            full_path = os.path.join(root, f)
+                            # 生成相对路径作为显示名
+                            rel_path = os.path.relpath(full_path, base_path)
+                            mtime = os.path.getmtime(full_path)
+                            apk_items.append((rel_path, full_path, mtime))
+            except Exception as e:
+                self.after(0, lambda: self.log(f"读取 APK 目录失败: {e}", "ERROR"))
+
+            # 按修改时间降序排序
+            apk_items.sort(key=lambda x: x[2], reverse=True)
+
+            # 回主线程更新 UI
+            def _update_ui():
+                self.btn_refresh_apk.configure(state="normal", text="刷新")
+                # 过滤掉隐藏的 APK
+                hidden_apks = set(self.config_manager.get_hidden_apks())
+                visible_items = [item for item in apk_items if item[0] not in hidden_apks]
+                # 智能安装只显示文件名，不带子文件夹前缀
+                self.apk_path_map = {os.path.basename(item[1]): item[1] for item in visible_items}
+                display_names = [os.path.basename(item[1]) for item in visible_items]
+                if display_names:
+                    self.apk_selector.configure(values=display_names)
+                    self.apk_selector.set(display_names[0])
+                else:
+                    self.apk_selector.configure(values=[])
+                    self.apk_selector.set("未找到匹配的 APK" if keyword else "目录中无 APK")
+            self.after(0, _update_ui)
+
+        threading.Thread(target=_scan, daemon=True).start()
 
     def action_install_apk(self):
         selection = self.apk_selector.get()
@@ -427,15 +484,17 @@ class AppManageTab(ctk.CTkFrame):
             messagebox.showwarning("提示", "请先选择一个有效的 APK", parent=self)
             return
 
-        apk_dir = self.config_manager.get_apk_dir()
-        apk_path = os.path.join(apk_dir, selection)
-        
+        # 优先从路径映射中获取绝对路径，兼容旧逻辑
+        apk_path = self.apk_path_map.get(selection)
+        if not apk_path:
+            apk_dir = self.config_manager.get_apk_dir()
+            apk_path = os.path.join(apk_dir, selection)
+
         if not os.path.exists(apk_path):
             messagebox.showerror("错误", "APK 文件不存在", parent=self)
             return
 
         self.log(f"开始安装: {selection}", "INFO")
-        # Smart install targets the current app.
         pkg = self.current_app_pkg
         try:
             self.adb_helper.install_apk(apk_path, on_complete=lambda success=True: self._handle_auto_launch(pkg) if success else None)
