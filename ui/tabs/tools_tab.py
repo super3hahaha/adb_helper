@@ -3,6 +3,7 @@ import tkinter.messagebox as messagebox
 import threading
 import subprocess
 from ui.utils import optimize_combobox_width
+from ui.components.tooltip import ModernTooltip
 
 class ToolsTab(ctk.CTkFrame):
     def __init__(self, parent, adb_helper, config_manager, log_func):
@@ -51,23 +52,34 @@ class ToolsTab(ctk.CTkFrame):
         frame_dev_header = ctk.CTkFrame(frame_dev, fg_color="transparent")
         frame_dev_header.pack(pady=(5, 2), padx=10, fill="x")
         ctk.CTkLabel(frame_dev_header, text="文本输入", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(frame_dev_header, text="?", width=28, height=28, corner_radius=14, fg_color="gray50", hover_color="gray40", command=self.show_send_text_help).pack(side="left", padx=(5, 0))
-
-        # 发送文本 - ADB Keyboard 模式
-        ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
-        input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        input_frame.pack(pady=(0, 2), padx=10, fill="x")
-        self.entry_input_text = ctk.CTkEntry(input_frame, placeholder_text="输入要发送的文本...")
-        self.entry_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ctk.CTkButton(input_frame, text="发送", width=60, command=self.action_send_text).pack(side="right")
+        self.help_btn = ctk.CTkButton(frame_dev_header, text="?", width=28, height=28, corner_radius=14, fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.help_btn, sections=[
+            ("模拟按键输入 (仅 ASCII)",
+             "通过 adb shell input text 逐字符模拟按键，无需安装。\n"
+             "仅支持英文字母、数字和常见符号。\n"
+             "使用前请将设备键盘切换到英文输入法。"),
+            ("ADB Keyboard (支持所有语言)",
+             "通过 ADB Keyboard 广播发送，支持中文、俄语等所有语言。\n"
+             "首次使用会自动安装 ADB Keyboard APK。\n"
+             "部分设备（如 OPPO）需手动在设置中切换默认输入法。"),
+        ])
 
         # 发送文本 - 模拟按键模式
         ctk.CTkLabel(frame_dev, text="模拟按键输入 (仅支持英文字母、数字和常见符号，无需安装)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
         raw_input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        raw_input_frame.pack(pady=(0, 5), padx=10, fill="x")
+        raw_input_frame.pack(pady=(0, 2), padx=10, fill="x")
         self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, placeholder_text="输入要发送的文本...")
         self.entry_raw_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ctk.CTkButton(raw_input_frame, text="发送", width=60, command=self.action_send_raw_text).pack(side="right")
+
+        # 发送文本 - ADB Keyboard 模式
+        ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
+        input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
+        input_frame.pack(pady=(0, 5), padx=10, fill="x")
+        self.entry_input_text = ctk.CTkEntry(input_frame, placeholder_text="输入要发送的文本...")
+        self.entry_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ctk.CTkButton(input_frame, text="发送", width=60, command=self.action_send_text).pack(side="right")
 
         # 1.5 文件传输 (Push 至设备)
         frame_push = ctk.CTkFrame(self.container_system)
@@ -313,37 +325,6 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"模拟按键发送异常: {e}", "ERROR")
         threading.Thread(target=_thread, daemon=True).start()
-
-    def show_send_text_help(self):
-        help_window = ctk.CTkToplevel(self)
-        help_window.title("文本输入模式说明")
-        help_window.geometry("480x280")
-        help_window.resizable(False, False)
-
-        help_window.update_idletasks()
-        x = self.winfo_rootx() + (self.winfo_width() // 2) - 240
-        y = self.winfo_rooty() + (self.winfo_height() // 2) - 140
-        help_window.geometry(f"+{x}+{y}")
-
-        help_window.transient(self.winfo_toplevel())
-        help_window.grab_set()
-
-        help_text = (
-            "🔵 ADB Keyboard (支持所有语言)\n"
-            "通过 ADB Keyboard 广播发送文本，支持中文、英文、俄语、阿拉伯语等所有语言。\n"
-            "首次使用会自动安装 ADB Keyboard APK。\n"
-            "部分设备（如 OPPO）权限受限，需要手动操作：\n"
-            "  启用 ADB Keyboard，然后在 设置 - 其他设置 - 键盘与输入法 - 默认输入法 中切换为 ADB Keyboard。\n\n"
-            "🟢 模拟按键输入 (仅 ASCII)\n"
-            "通过 adb shell input text 逐字符模拟按键输入，无需安装任何 APK。\n"
-            "仅支持英文字母、数字和常见符号。\n"
-            "使用前请将设备键盘切换到英文输入法，否则可能输出乱码。"
-        )
-
-        textbox = ctk.CTkTextbox(help_window, wrap="word", font=ctk.CTkFont(size=13))
-        textbox.pack(fill="both", expand=True, padx=15, pady=15)
-        textbox.insert("1.0", help_text)
-        textbox.configure(state="disabled")
 
     def action_start_wireless_debug(self):
         # 检查是否已有无线连接的设备

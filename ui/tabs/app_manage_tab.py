@@ -7,6 +7,7 @@ import datetime
 import threading
 import glob
 from tkinterdnd2 import DND_FILES
+from ui.components.tooltip import ModernTooltip
 
 from ui.utils import optimize_combobox_width
 from ui.windows.screenshot_preview import ScreenshotPreviewWindow
@@ -59,8 +60,20 @@ class AppManageTab(ctk.CTkFrame):
         frame_clear_wrapper = ctk.CTkFrame(frame_actions, fg_color="transparent")
         frame_clear_wrapper.grid(row=0, column=1, sticky="ew", padx=(2, 2), pady=2)
         
-        btn_help = ctk.CTkButton(frame_clear_wrapper, text="?", width=28, height=28, corner_radius=14, fg_color="gray50", hover_color="gray40", command=self.show_clear_data_help)
+        btn_help = ctk.CTkButton(frame_clear_wrapper, text="?", width=28, height=28, corner_radius=14, fg_color="gray50", hover_color="gray40", command=lambda: None)
         btn_help.pack(side="right", padx=(2, 0))
+        ModernTooltip(btn_help, sections=[
+            ("为什么清除数据/执行命令会失败？",
+             "很多国内手机品牌（如小米、OPPO、vivo 等）为了防止恶意软件通过 USB 篡改手机，"
+             "对 ADB 权限做了阉割或额外限制。仅仅开启\"USB调试\"是不够的。"),
+            ("小米 / Redmi (MIUI / HyperOS)",
+             "进入手机的\"设置\" -> \"开发者选项\"，找到并开启【USB调试 (安全设置)】。\n"
+             "（注：开启此项通常需要插入 SIM 卡并登录小米账号）。\n"
+             "此选项的作用是允许通过 USB 修改权限或模拟点击。开启后再执行命令即可成功。"),
+            ("OPPO / vivo / realme",
+             "进入手机的\"开发者选项\"，往下拉找到类似【禁止权限监控】"
+             "或者是安全相关的 USB 调试选项，将其开启。"),
+        ])
         
         ctk.CTkButton(frame_clear_wrapper, text="清除 App 数据", command=self.action_clear_data, fg_color="#e0a800", hover_color="#b08800", height=28, anchor="e").pack(side="left", expand=True, fill="x")
 
@@ -273,35 +286,6 @@ class AppManageTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"启动 App 失败: {e}", "ERROR")
         threading.Thread(target=_thread, daemon=True).start()
-
-    def show_clear_data_help(self):
-        help_window = ctk.CTkToplevel(self)
-        help_window.title("💡 为什么清除数据/执行命令会失败？")
-        help_window.geometry("500x320")
-        help_window.resizable(False, False)
-        
-        # 居中显示
-        help_window.update_idletasks()
-        x = self.winfo_rootx() + (self.winfo_width() // 2) - (500 // 2)
-        y = self.winfo_rooty() + (self.winfo_height() // 2) - (320 // 2)
-        help_window.geometry(f"+{x}+{y}")
-        
-        help_window.transient(self.winfo_toplevel())
-        help_window.grab_set()
-
-        help_text = (
-            "很多国内手机品牌（如小米、OPPO、vivo 等）为了防止恶意软件通过 USB 篡改手机，对 ADB 权限做了阉割或额外限制。仅仅开启“USB调试”是不够的。\n\n"
-            "🔴 小米 / Redmi (MIUI / HyperOS)：\n"
-            "进入手机的“设置” -> “开发者选项”，找到并开启【USB调试 (安全设置)】。\n"
-            "（注：开启此项通常需要插入 SIM 卡并登录小米账号）。此选项的作用是允许通过 USB 修改权限或模拟点击。开启后再执行命令即可成功。\n\n"
-            "🔵 OPPO / vivo / realme：\n"
-            "进入手机的“开发者选项”，往下拉找到类似【禁止权限监控】或者是安全相关的 USB 调试选项，将其开启。"
-        )
-        
-        textbox = ctk.CTkTextbox(help_window, wrap="word", font=ctk.CTkFont(size=13))
-        textbox.pack(fill="both", expand=True, padx=15, pady=15)
-        textbox.insert("1.0", help_text)
-        textbox.configure(state="disabled") # 只读
 
     def action_take_screenshot(self):
         temp_dir = self.config_manager.get_temp_dir()
