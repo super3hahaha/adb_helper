@@ -62,10 +62,10 @@ class ToolsTab(ctk.CTkFrame):
         ctk.CTkButton(input_frame, text="发送", width=60, command=self.action_send_text).pack(side="right")
 
         # 发送文本 - 模拟按键模式
-        ctk.CTkLabel(frame_dev, text="模拟按键输入 (仅 ASCII，无需安装)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
+        ctk.CTkLabel(frame_dev, text="模拟按键输入 (仅支持英文字母、数字和常见符号，无需安装)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
         raw_input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
         raw_input_frame.pack(pady=(0, 5), padx=10, fill="x")
-        self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, placeholder_text="输入 ASCII 文本...")
+        self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, placeholder_text="输入要发送的文本...")
         self.entry_raw_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ctk.CTkButton(raw_input_frame, text="发送", width=60, command=self.action_send_raw_text).pack(side="right")
 
