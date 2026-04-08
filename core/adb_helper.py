@@ -171,11 +171,75 @@ class ADBHelper:
         self.check_device()
         return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.DATE_SETTINGS"])
 
+    ADB_KB_PKG = "com.android.adbkeyboard"
+    ADB_KB_IME = f"{ADB_KB_PKG}/.AdbIME"
+
+    def _install_adb_keyboard(self):
+        """确保 ADB Keyboard 已安装，返回是否安装成功"""
+        _, output = self.execute_adb_command(["adb", "shell", "pm", "list", "packages", self.ADB_KB_PKG])
+        if self.ADB_KB_PKG in (output or ""):
+            return True
+
+        apk_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "ADBKeyboard.apk")
+        if not os.path.exists(apk_path):
+            self.log("ADB Keyboard APK 文件不存在，无法自动安装", "ERROR")
+            return False
+        self.log("首次发送文本，正在自动安装 ADB Keyboard...", "INFO")
+        success, msg = self.execute_adb_command(["adb", "install", apk_path])
+        if not success:
+            self.log(f"ADB Keyboard 安装失败: {msg}", "ERROR")
+            return False
+        self.log("ADB Keyboard 安装成功", "SUCCESS")
+        return True
+
+    def _is_adb_keyboard_active(self):
+        """检查当前输入法是否为 ADB Keyboard"""
+        _, current_ime = self.execute_adb_command(["adb", "shell", "settings", "get", "secure", "default_input_method"])
+        return self.ADB_KB_IME in (current_ime or "").strip()
+
+    def _try_switch_to_adb_keyboard(self):
+        """尝试自动切换到 ADB Keyboard，返回是否成功"""
+        success, _ = self.execute_adb_command(["adb", "shell", "ime", "set", self.ADB_KB_IME])
+        if success:
+            return True
+        success, _ = self.execute_adb_command(["adb", "shell", "settings", "put", "secure", "default_input_method", self.ADB_KB_IME])
+        return success
+
     def send_text(self, text):
-        if text:
-            text_escaped = text.replace(" ", "%s") 
+        """通过 ADB Keyboard 广播发送文本，支持所有语言"""
+        if not text:
+            return False, "Empty text"
+
+        # 1. 确保已安装
+        if not self._install_adb_keyboard():
+            text_escaped = text.replace(" ", "%s")
             return self.execute_adb_command(["adb", "shell", "input", "text", text_escaped])
-        return False, "Empty text"
+
+        # 2. 如果不是当前输入法，尝试自动切换（只试一次，不阻塞）
+        if not self._is_adb_keyboard_active():
+            if not self._try_switch_to_adb_keyboard():
+                # 自动切换失败，引导用户手动操作
+                self.log(
+                    "当前设备权限受限，无法自动切换输入法。\n"
+                    "请在设备上手动操作：启用 ADB Keyboard，然后在 设置 - 其他设置 - 键盘与输入法 - 默认输入法 中切换为 ADB Keyboard",
+                    "WARNING"
+                )
+                self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.INPUT_METHOD_SETTINGS"])
+                return False, "需要手动切换到 ADB Keyboard"
+
+        # 3. 通过广播发送文本
+        safe_text = text.replace("'", "'\\''")
+        return self.execute_adb_command([
+            "adb", "shell",
+            f"am broadcast -a ADB_INPUT_TEXT --es msg '{safe_text}'"
+        ])
+
+    def send_raw_text(self, text):
+        """通过 adb shell input text 模拟按键输入（仅支持 ASCII）"""
+        if not text:
+            return False, "Empty text"
+        text_escaped = text.replace(" ", "%s")
+        return self.execute_adb_command(["adb", "shell", "input", "text", text_escaped])
 
     def sim_low_battery(self):
         def _seq():
