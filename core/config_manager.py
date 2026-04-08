@@ -5,6 +5,7 @@ from core.platform_utils import PlatformUtils
 class ConfigManager:
     DEFAULT_CONFIG = {
         "apk_dir": "",
+        "temp_dir_path": "",  # 为空时默认使用项目根目录下的 temp 文件夹
         "pinned_app": None,
         "auto_launch_enabled": False,
         "hide_global_log": False,
@@ -48,6 +49,16 @@ class ConfigManager:
                 json.dump(data, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving config: {e}")
+
+    def get_temp_dir(self):
+        path = self.data.get("temp_dir_path", "")
+        if not path:
+            return os.path.join(os.getcwd(), "temp")
+        return path
+
+    def set_temp_dir(self, path):
+        self.data["temp_dir_path"] = path
+        self.save_config()
 
     def get_apk_dir(self):
         return self.data.get("apk_dir", "")

@@ -4,17 +4,22 @@ import subprocess
 from core.platform_utils import PlatformUtils
 
 class FileHelper:
-    def __init__(self):
-        # 定义全局的 Temp 目录为项目根目录下的 temp 文件夹
-        self.temp_dir = os.path.join(os.getcwd(), "temp")
-        if not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir)
+    def __init__(self, config_manager=None):
+        self.config_manager = config_manager
+        # 确保临时目录存在
+        temp_dir = self.get_temp_dir()
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
 
     def get_temp_dir(self):
         """返回临时目录的绝对路径，如果不存在则创建"""
-        if not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir)
-        return self.temp_dir
+        if self.config_manager:
+            path = self.config_manager.get_temp_dir()
+        else:
+            path = os.path.join(os.getcwd(), "temp")
+        if not os.path.exists(path):
+            os.makedirs(path)
+        return path
 
     def open_temp_directory(self):
         """调用系统资源管理器打开 Temp 目录"""

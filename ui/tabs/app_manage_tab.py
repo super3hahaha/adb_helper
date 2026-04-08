@@ -20,7 +20,6 @@ class AppManageTab(ctk.CTkFrame):
         self.log = log_func
         
         # State
-        self.temp_dir = "temp"
         self.is_recording = False
         self.current_app_pkg = None
 
@@ -305,11 +304,12 @@ class AppManageTab(ctk.CTkFrame):
         textbox.configure(state="disabled") # 只读
 
     def action_take_screenshot(self):
-        if not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir)
-            
+        temp_dir = self.config_manager.get_temp_dir()
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
         self.log("正在截取屏幕...", "INFO")
-        
+
         def on_complete(local_path):
             if local_path and os.path.exists(local_path):
                 self.log(f"截图已保存至临时目录: {local_path}", "SUCCESS")
@@ -319,22 +319,23 @@ class AppManageTab(ctk.CTkFrame):
                 self.after(0, lambda: messagebox.showerror("失败", "截图失败", parent=self))
 
         try:
-            self.adb_helper.take_screenshot(self.temp_dir, on_complete)
+            self.adb_helper.take_screenshot(temp_dir, on_complete)
         except Exception as e:
             self.log(f"截图异常: {e}", "ERROR")
 
     def show_screenshot_preview(self, image_path):
-        ScreenshotPreviewWindow(self.winfo_toplevel(), image_path, log_func=self.log, adb_helper=self.adb_helper, temp_dir=self.temp_dir)
+        temp_dir = self.config_manager.get_temp_dir()
+        ScreenshotPreviewWindow(self.winfo_toplevel(), image_path, log_func=self.log, adb_helper=self.adb_helper, temp_dir=temp_dir)
 
     def action_screen_record(self):
         if self.is_recording:
             # Stop recording
             self.log("正在停止录制并拉取视频...", "INFO")
-            self.btn_screen_record.configure(text="⏳ 处理中...", state="disabled")
+            self.btn_screen_record.configure(text="处理中...", state="disabled")
             
             def on_complete(local_path):
                 self.is_recording = False
-                self.after(0, lambda: self.btn_screen_record.configure(text="📹 录制屏幕", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"], state="normal"))
+                self.after(0, lambda: self.btn_screen_record.configure(text="录制屏幕", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"], state="normal"))
                 
                 if local_path and os.path.exists(local_path):
                     self.log(f"视频已拉取至临时目录: {local_path}", "SUCCESS")
@@ -384,21 +385,22 @@ class AppManageTab(ctk.CTkFrame):
                     self.after(0, lambda: messagebox.showerror("失败", "录制失败", parent=self))
 
             try:
-                self.adb_helper.stop_recording(self.temp_dir, on_complete)
+                self.adb_helper.stop_recording(self.config_manager.get_temp_dir(), on_complete)
             except Exception as e:
                 self.log(f"停止录制异常: {e}", "ERROR")
                 self.is_recording = False
-                self.btn_screen_record.configure(text="📹 录制屏幕", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"], state="normal")
+                self.btn_screen_record.configure(text="录制屏幕", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"], state="normal")
             
         else:
             # Start recording
-            if not os.path.exists(self.temp_dir):
-                os.makedirs(self.temp_dir)
+            temp_dir = self.config_manager.get_temp_dir()
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
                 
             try:
                 if self.adb_helper.start_recording():
                     self.is_recording = True
-                    self.btn_screen_record.configure(text="⏹ 停止录制", fg_color="#c42b1c", hover_color="#8a1f15")
+                    self.btn_screen_record.configure(text="停止录制", fg_color="#c42b1c", hover_color="#8a1f15")
                     self.log("开始录制屏幕 (最大3分钟)...", "INFO")
                 else:
                     messagebox.showerror("失败", "无法启动录制", parent=self)

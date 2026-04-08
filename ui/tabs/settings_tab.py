@@ -1,3 +1,4 @@
+import os
 import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import tkinter.filedialog as filedialog
@@ -12,7 +13,7 @@ class SettingsTab(ctk.CTkFrame):
         self.config_manager = config_manager
         self.log = log_func
         self.on_config_changed = on_config_changed
-        self.file_helper = FileHelper()
+        self.file_helper = FileHelper(config_manager)
         
         self.setup_ui()
 
@@ -31,14 +32,20 @@ class SettingsTab(ctk.CTkFrame):
         
         ctk.CTkButton(frame_path, text="选择文件夹...", command=self.browse_apk_dir).pack(pady=(0, 5), padx=10, anchor="e")
 
-        # 1.5 临时文件管理
-        frame_temp = ctk.CTkFrame(frame_path, fg_color="transparent")
-        frame_temp.pack(pady=(2, 5), padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_temp, text="临时文件管理 (Temp)：", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        
-        ctk.CTkButton(frame_temp, text="清空", command=self.action_clear_temp, fg_color="#c42b1c", hover_color="#8a1f15", width=80).pack(side="right", padx=(10, 0))
-        ctk.CTkButton(frame_temp, text="打开目录", command=self.action_open_temp, width=100).pack(side="right")
+        # 1.5 临时文件目录
+        ctk.CTkLabel(frame_path, text="临时文件目录 (Temp):", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+
+        self.entry_temp_dir = ctk.CTkEntry(frame_path, state="readonly")
+        self.entry_temp_dir.pack(pady=2, padx=10, fill="x")
+        self.entry_temp_dir.configure(state="normal")
+        self.entry_temp_dir.insert(0, self.config_manager.get_temp_dir())
+        self.entry_temp_dir.configure(state="readonly")
+
+        frame_temp_btns = ctk.CTkFrame(frame_path, fg_color="transparent")
+        frame_temp_btns.pack(pady=(0, 5), padx=10, fill="x")
+
+        ctk.CTkButton(frame_temp_btns, text="设置路径", command=self.action_set_temp_path, width=100).pack(side="right", padx=(10, 0))
+        ctk.CTkButton(frame_temp_btns, text="打开目录", command=self.action_open_temp, width=100).pack(side="right")
 
         # 2. 全局默认 (置顶) App 设置
         frame_pinned = ctk.CTkFrame(self)
@@ -127,18 +134,22 @@ class SettingsTab(ctk.CTkFrame):
                 self.on_config_changed()
 
     def action_open_temp(self):
+        temp_path = self.config_manager.get_temp_dir()
+        if not os.path.exists(temp_path):
+            os.makedirs(temp_path)
         success = self.file_helper.open_temp_directory()
         if not success:
             self.log("打开临时目录失败", "ERROR")
 
-    def action_clear_temp(self):
-        confirm = messagebox.askyesno("清空确认", "确定要清空所有临时文件吗？\n此操作不可恢复。", parent=self)
-        if confirm:
-            success, count = self.file_helper.clear_temp_directory()
-            if success:
-                self.log(f"成功清理临时目录，共删除 {count} 个文件/文件夹。", "SUCCESS")
-            else:
-                self.log(f"清理临时目录时发生部分错误，删除了 {count} 个文件/文件夹。", "ERROR")
+    def action_set_temp_path(self):
+        path = filedialog.askdirectory(title="选择临时文件存储目录", parent=self)
+        if path:
+            self.config_manager.set_temp_dir(path)
+            self.entry_temp_dir.configure(state="normal")
+            self.entry_temp_dir.delete(0, "end")
+            self.entry_temp_dir.insert(0, path)
+            self.entry_temp_dir.configure(state="readonly")
+            self.log(f"临时文件目录已更改为: {path}", "INFO")
 
     def refresh_app_name_combo(self):
         apps = self.config_manager.get_apps()
