@@ -72,6 +72,7 @@ class ToolsTab(ctk.CTkFrame):
         self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, placeholder_text="输入要发送的文本...")
         self.entry_raw_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ctk.CTkButton(raw_input_frame, text="发送", width=60, command=self.action_send_raw_text).pack(side="right")
+        ctk.CTkButton(raw_input_frame, text="x", width=20, height=20, fg_color="transparent", hover_color="gray70", text_color="gray50", font=ctk.CTkFont(size=11), command=lambda: self.entry_raw_input_text.delete(0, "end")).pack(side="right", padx=(0, 2))
 
         # 发送文本 - ADB Keyboard 模式
         ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
@@ -80,6 +81,7 @@ class ToolsTab(ctk.CTkFrame):
         self.entry_input_text = ctk.CTkEntry(input_frame, placeholder_text="输入要发送的文本...")
         self.entry_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ctk.CTkButton(input_frame, text="发送", width=60, command=self.action_send_text).pack(side="right")
+        ctk.CTkButton(input_frame, text="x", width=20, height=20, fg_color="transparent", hover_color="gray70", text_color="gray50", font=ctk.CTkFont(size=11), command=lambda: self.entry_input_text.delete(0, "end")).pack(side="right", padx=(0, 2))
 
         # 1.5 文件传输 (Push 至设备)
         frame_push = ctk.CTkFrame(self.container_system)
