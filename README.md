@@ -80,3 +80,7 @@
            ```
         3. 按下回车键，输入你的 Mac 开机密码（输入时密码不可见，输完回车即可）。
         4. 再次去应用程序里双击打开软件，就可以完美运行了！
+
+---
+
+> 项目结构与依赖库详见 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
