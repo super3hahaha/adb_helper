@@ -53,7 +53,11 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             self.current_scale = min(scale_w, scale_h, 1.0)
             self.img_offset_x = 0
             self.img_offset_y = 0
-            
+            # 用户拖拽产生的额外偏移（自由平移）
+            self.pan_dx = 0
+            self.pan_dy = 0
+            self._last_pan = None
+
             self.tk_image = None
         except Exception as e:
             messagebox.showerror("错误", f"无法加载图片: {e}")
@@ -137,7 +141,7 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.control_frame = ctk.CTkFrame(self)
         self.control_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
 
-        ctk.CTkLabel(self.control_frame, text="提示: 滚轮缩放，左键拖拽 (Ctrl+C 复制)").pack(side="left", padx=10)
+        ctk.CTkLabel(self.control_frame, text="提示: 按住空格+鼠标拖动，Ctrl+滚轮缩放").pack(side="left", padx=10)
 
         # 按钮从右向左添加，先添加的在最右边
         self.btn_save = ctk.CTkButton(self.control_frame, text="保存", command=self.save_to_temp)
@@ -146,6 +150,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         ctk.CTkButton(self.control_frame, text="另存为...", command=self.save_as, fg_color="#2d7d46", hover_color="#1e5c32").pack(side="right", padx=10, pady=10)
 
         ctk.CTkButton(self.control_frame, text="复制", command=self.copy_to_clipboard, fg_color="#2d7d46", hover_color="#1e5c32").pack(side="right", padx=10, pady=10)
+
+        ctk.CTkButton(self.control_frame, text="位置复原", command=self.reset_view, fg_color="#6b6b6b", hover_color="#4a4a4a").pack(side="right", padx=10, pady=10)
 
         # 快捷键绑定
         from core.platform_utils import PlatformUtils
@@ -158,6 +164,11 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
         self.bind(f"{ctrl_key}Z>", lambda e: self.undo_last_shape())
         self.bind(f"{ctrl_key}s>", lambda e: self.save_to_temp())
         self.bind(f"{ctrl_key}S>", lambda e: self.save_to_temp())
+
+        # 空格键临时切换至平移模式（按住时平移，松开恢复原模式）
+        self._mode_before_space = None
+        self.bind("<KeyPress-space>", self._on_space_press)
+        self.bind("<KeyRelease-space>", self._on_space_release)
         
         # 初始显示
         self.update_idletasks()
@@ -180,6 +191,22 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             self.canvas.configure(cursor="crosshair")
         else:
             self.canvas.configure(cursor="arrow")
+
+    def _on_space_press(self, event):
+        # 忽略键盘自动重复触发；仅在第一次按下时记录原模式并切换到平移
+        if self._mode_before_space is not None:
+            return
+        if self.drawing_mode is None:
+            return  # 已经是平移模式，无需切换
+        self._mode_before_space = self.drawing_mode
+        self.set_mode(None)
+
+    def _on_space_release(self, event):
+        if self._mode_before_space is None:
+            return
+        prev = self._mode_before_space
+        self._mode_before_space = None
+        self.set_mode(prev)
 
     def set_color(self, color):
         self.current_color = color
@@ -310,8 +337,8 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             self.img_offset_y = 0
             scroll_w, scroll_h = new_width, new_height
         else:
-            self.img_offset_x = max(0, (canvas_width - new_width) // 2)
-            self.img_offset_y = max(0, (canvas_height - new_height) // 2)
+            self.img_offset_x = max(0, (canvas_width - new_width) // 2) + self.pan_dx
+            self.img_offset_y = max(0, (canvas_height - new_height) // 2) + self.pan_dy
             scroll_w = max(canvas_width, new_width)
             scroll_h = max(canvas_height, new_height)
         
@@ -343,13 +370,46 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             elif shape['type'] == 'arrow':
                 self.canvas.create_line(x1, y1, x2, y2, fill=shape['color'], width=display_width, arrow=tk.LAST, arrowshape=(display_width*4, display_width*5, display_width*2))
 
-    def on_mouse_wheel(self, event):
-        if event.num == 5 or event.delta < 0:
-            self.current_scale *= 0.9
-        else:
-            self.current_scale *= 1.1
-        self.current_scale = max(0.1, min(self.current_scale, 5.0))
+    def reset_view(self):
+        """恢复初始的图片缩放和位置"""
+        if not self.original_image:
+            return
+        # 重新按当前画布大小计算适应缩放
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        avail_w = canvas_width if canvas_width > 10 else 860
+        avail_h = canvas_height if canvas_height > 10 else 580
+        img_w, img_h = self.original_image.size
+        self.current_scale = min(avail_w / img_w, avail_h / img_h, 1.0)
+        # 清空平移偏移
+        self.pan_dx = 0
+        self.pan_dy = 0
+        # 重置滚动条到原点
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
         self.update_image()
+
+    def on_mouse_wheel(self, event):
+        # 判断滚轮方向
+        if event.num == 5 or event.delta < 0:
+            direction = -1  # 向下
+        else:
+            direction = 1   # 向上
+
+        # 判断是否按住 Ctrl (event.state bit 0x4)
+        ctrl_pressed = bool(event.state & 0x4)
+
+        if ctrl_pressed:
+            # 缩放
+            if direction < 0:
+                self.current_scale *= 0.9
+            else:
+                self.current_scale *= 1.1
+            self.current_scale = max(0.1, min(self.current_scale, 5.0))
+            self.update_image()
+        else:
+            # 普通滚动：垂直滚动条
+            self.canvas.yview_scroll(-direction, "units")
 
     def on_drag_start(self, event):
         if self.drawing_mode:
@@ -360,7 +420,9 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             img_y = (canvas_y - self.img_offset_y) / self.current_scale
             self.start_pos = (img_x, img_y)
         else:
-            self.canvas.scan_mark(event.x, event.y)
+            # 平移模式：记录拖动起点，使用自由偏移
+            self._last_pan = (event.x, event.y)
+            self.canvas.configure(cursor="fleur")
 
     def on_drag_move(self, event):
         if self.drawing_mode and self.start_pos:
@@ -390,10 +452,25 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
                     fill=self.current_color, width=display_width, arrow=tk.LAST,
                     arrowshape=(display_width*4, display_width*5, display_width*2)
                 )
-        else:
-            self.canvas.scan_dragto(event.x, event.y, gain=1)
+        elif self._last_pan is not None:
+            # 自由平移：通过移动 canvas 上的所有元素，同时累计偏移量
+            dx = event.x - self._last_pan[0]
+            dy = event.y - self._last_pan[1]
+            self._last_pan = (event.x, event.y)
+            self.pan_dx += dx
+            self.pan_dy += dy
+            self.img_offset_x += dx
+            self.img_offset_y += dy
+            self.canvas.move("all", dx, dy)
 
     def on_drag_end(self, event):
+        if self._last_pan is not None:
+            self._last_pan = None
+            # 恢复光标
+            if self.drawing_mode is None:
+                self.canvas.configure(cursor="arrow")
+            else:
+                self.canvas.configure(cursor="crosshair")
         if self.drawing_mode and self.start_pos:
             if self.temp_shape_id:
                 self.canvas.delete(self.temp_shape_id)
