@@ -549,7 +549,9 @@ class ScreenshotPreviewWindow(ctk.CTkToplevel):
             width = shape['width']
             
             if shape['type'] == 'rect':
-                draw.rectangle((nx1, ny1, nx2, ny2), outline=color, width=width)
+                rx1, rx2 = sorted((nx1, nx2))
+                ry1, ry2 = sorted((ny1, ny2))
+                draw.rectangle((rx1, ry1, rx2, ry2), outline=color, width=width)
             elif shape['type'] == 'arrow':
                 # PIL 没有直接的 arrow，需要手动绘制
                 # 画主线
