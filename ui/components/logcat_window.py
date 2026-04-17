@@ -3,6 +3,10 @@ import tkinter as tk
 from queue import Empty
 import re
 import datetime
+import subprocess
+import threading
+
+from core.platform_utils import PlatformUtils
 
 class LogcatWindow(ctk.CTkToplevel):
     def __init__(self, parent, adb_helper, default_pkg="", log_func=None):
@@ -26,8 +30,12 @@ class LogcatWindow(ctk.CTkToplevel):
         
         # PID filtering
         self.observed_pids = set()
+        self.app_pids = set()  # 通过 pidof 或 Start proc 事件获得的目标 app 真实 PID
         self.last_pkg_filter = ""
         self.pid_pattern = re.compile(r'\(\s*(\d+)\s*\):')
+        # 匹配 ActivityManager 的 Start proc 日志，用于追踪 app 重启后的新 PID
+        # 例如: "Start proc 12345:com.pkg.name/u0a..." 或 "Start proc 12345:com.pkg.name:remote/..."
+        self.start_proc_pattern = re.compile(r'Start proc (\d+):([\w\.]+)')
         # 优化正则：分别捕获 (1)时间戳 (2)级别 (3)TAG (4)PID
         # 原始格式: 03-17 11:44:24.715 E/AndroidRuntime( 9734):
         self.header_pattern = re.compile(r'^(\d{2}-\d{2}\s+[\d:\.]+)\s+([A-Z])/([^\(]+)\(\s*(\d+)\s*\):')
@@ -66,11 +74,11 @@ class LogcatWindow(ctk.CTkToplevel):
         self.entry_pkg.insert(0, self.default_pkg or "")
         self.entry_pkg.pack(side="left", fill="x", expand=True)
         
-        btn_clear_pkg = ctk.CTkButton(pkg_frame, text="x", width=20, height=20, 
+        btn_clear_pkg = ctk.CTkButton(pkg_frame, text="x", width=20, height=20,
                                       fg_color="transparent", text_color="gray", hover_color="#e0e0e0",
                                       command=lambda: [self.entry_pkg.delete(0, "end"), self.entry_pkg.focus()])
         btn_clear_pkg.pack(side="left", padx=(2, 0))
-        
+
         # Keyword Search
         ctk.CTkLabel(frame_toolbar, text="Search:").pack(side="left", padx=5)
         
@@ -127,7 +135,7 @@ class LogcatWindow(ctk.CTkToplevel):
         level_map = {"Verbose": "V", "Debug": "D", "Info": "I", "Warn": "W", "Error": "E"}
         selected_level = self.combo_level.get()
         level_char = level_map.get(selected_level, "E")
-        
+
         try:
             self.log_queue = self.adb_helper.start_logcat(level_char)
         except Exception as e:
@@ -135,12 +143,72 @@ class LogcatWindow(ctk.CTkToplevel):
                 self.log_func(f"Logcat 启动失败: {e}", "ERROR")
             self.log_queue = None
             return
-            
+
         if self.log_func:
             self.log_func(f"Logcat started with level: {selected_level}", "INFO")
-            
+
+        # 如果当前过滤器是包名，启动时异步抓一次真实 PID
+        pkg = self.entry_pkg.get().strip()
+        if pkg and "." in pkg:
+            threading.Thread(target=self._refresh_app_pids, args=(pkg,), daemon=True).start()
+
         # Start polling
         self.update_logs()
+
+    def _refresh_app_pids(self, pkg):
+        """
+        通过 `adb shell pidof <pkg>` 获取目标 app 的真实 PID，失败时 fallback 到 `ps -A`。
+        在后台线程中执行，结果写入 self.app_pids。
+        """
+        if not pkg or "." not in pkg:
+            return
+
+        device_id = getattr(self.adb_helper, "current_device_id", None)
+        adb_cmd = getattr(self.adb_helper, "adb_cmd", None)
+        if not device_id or not adb_cmd:
+            return
+
+        new_pids = set()
+        kwargs = PlatformUtils.get_subprocess_kwargs(capture_output=True, text=True)
+        kwargs['timeout'] = 3
+
+        # 优先使用 pidof
+        try:
+            result = subprocess.run(
+                [adb_cmd, "-s", device_id, "shell", "pidof", pkg],
+                **kwargs
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                for p in result.stdout.strip().split():
+                    if p.isdigit():
+                        new_pids.add(p)
+        except Exception:
+            pass
+
+        # fallback: ps -A | grep pkg (某些老设备 pidof 不可用)
+        if not new_pids:
+            try:
+                result = subprocess.run(
+                    [adb_cmd, "-s", device_id, "shell", "ps", "-A"],
+                    **kwargs
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        parts = line.split()
+                        # Android ps 格式: USER PID PPID ... NAME
+                        if len(parts) >= 9 and parts[1].isdigit() and parts[-1] == pkg:
+                            new_pids.add(parts[1])
+            except Exception:
+                pass
+
+        # 过滤器未变才应用结果（避免竞态）
+        if self.entry_pkg.get().strip() == pkg:
+            self.app_pids = new_pids
+            if self.log_func:
+                if new_pids:
+                    self.log_func(f"追踪 {pkg} 的 PID: {','.join(sorted(new_pids))}", "INFO")
+                else:
+                    self.log_func(f"未检测到 {pkg} 运行中，等待 Start proc 事件...", "INFO")
 
     def stop_logcat(self):
         if self.after_id:
@@ -157,6 +225,7 @@ class LogcatWindow(ctk.CTkToplevel):
         self.stop_logcat()
         self.clear_logs()
         self.observed_pids.clear()
+        self.app_pids.clear()
         self.last_pkg_filter = ""
         self.last_tag_pid = None
         self.last_timestamp = None
@@ -305,36 +374,58 @@ class LogcatWindow(ctk.CTkToplevel):
 
     def should_show_line(self, line):
         pkg_filter = self.entry_pkg.get().strip()
-        
+
         # 包名/PID 过滤 (如果没有设置过滤条件，则显示所有)
         if not pkg_filter:
             return True
-            
+
         # 检查过滤条件是否改变
         if pkg_filter != self.last_pkg_filter:
             self.observed_pids.clear()
+            self.app_pids.clear()
             self.last_pkg_filter = pkg_filter
-            
+            # 过滤器变成包名时，异步刷新真实 PID
+            if "." in pkg_filter:
+                threading.Thread(target=self._refresh_app_pids, args=(pkg_filter,), daemon=True).start()
+
         # 尝试提取 PID
         # 格式通常为: "03-17 11:44:24.715 E/AndroidRuntime( 9734):" -> PID 9734
         match = self.pid_pattern.search(line)
         pid = match.group(1) if match else None
-        
+
         # 只有当过滤条件看起来像包名（包含点号）时，我们才启用 PID 追踪逻辑
         # 否则（如简单的字符串过滤），我们只做简单的包含匹配
         is_package_name_filter = "." in pkg_filter
-        
-        # A. 如果行包含过滤关键字
+
+        # 监听 ActivityManager 的 Start proc 事件，捕获 app 重启后的新 PID
+        # 注意：这行日志本身的 logger PID 是 system_server，我们要提取的是其 content 里的 new_pid
+        if is_package_name_filter:
+            sp_match = self.start_proc_pattern.search(line)
+            if sp_match:
+                new_pid = sp_match.group(1)
+                new_pkg = sp_match.group(2)
+                # 支持子进程（如 com.pkg:remote），取主包名比对
+                main_pkg = new_pkg.split(':')[0]
+                if main_pkg == pkg_filter:
+                    self.app_pids.add(new_pid)
+                    if self.log_func:
+                        self.log_func(f"检测到 {pkg_filter} 启动/重启，追踪 PID: {new_pid}", "INFO")
+
+        # A. 【新增】app 真实 PID 匹配 —— 解决普通日志（不含包名字符串）无法捕获的问题
+        if is_package_name_filter and pid and pid in self.app_pids:
+            return True
+
+        # B. 【原有】如果行包含过滤关键字
         if pkg_filter in line:
             # 如果是按包名过滤，我们记录它的 PID，以便后续抓取它的其他日志（如崩溃堆栈）
             if is_package_name_filter and pid:
                 self.observed_pids.add(pid)
             return True
-            
-        # B. 如果行不包含关键字，但启用了包名过滤，且 PID 是之前观察到的目标 App 的 PID -> 这是堆栈跟踪或其他相关日志
+
+        # C. 【原有】如果行不包含关键字，但启用了包名过滤，且 PID 是之前观察到的目标 App 的 PID -> 这是堆栈跟踪或其他相关日志
         if is_package_name_filter and pid and pid in self.observed_pids:
             return True
-            
+
         return False
 
     def on_close(self):
