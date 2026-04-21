@@ -257,6 +257,14 @@ class ADBHelper:
     def reset_battery(self):
         self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "reset"])
 
+    def sim_incoming_call(self):
+        self.execute_adb_command([
+            "adb", "shell",
+            "am", "broadcast",
+            "-a", "android.intent.action.TEST",
+            "--es", "state", "RINGING",
+        ])
+
     # --- Logcat ---
     def start_logcat(self, log_level="E"):
         try:

@@ -160,6 +160,14 @@ class ToolsTab(ctk.CTkFrame):
         ctk.CTkButton(frame_bat, text="模拟充满电 (100%)", command=self.adb_helper.sim_full_battery).pack(pady=2, padx=10, fill="x")
         ctk.CTkButton(frame_bat, text="恢复真实电量", fg_color="#c42b1c", hover_color="#8a1f15", command=self.adb_helper.reset_battery).pack(pady=(2, 5), padx=10, fill="x")
 
+        # 2.5 来电模拟
+        frame_call = ctk.CTkFrame(self.container_simulation)
+        frame_call.pack(pady=5, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+
+        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", command=self.adb_helper.sim_incoming_call).pack(pady=(2, 5), padx=10, fill="x")
+
         # 3. 网络模拟
         frame_net = ctk.CTkFrame(self.container_simulation)
         frame_net.pack(pady=5, padx=10, fill="x")
