@@ -11,7 +11,8 @@ class ConfigManager:
         "hide_global_log": False,
         "default_device_pull_path": "/sdcard/temp/",
         "apps": [],  # 格式: [{"name": "示例App", "pkg": "com.example.app", "keyword": "example"}]
-        "hidden_apks": []  # 隐藏的 APK 相对路径列表
+        "hidden_apks": [],  # 隐藏的 APK 相对路径列表
+        "filter_words": []  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
     }
 
     def __init__(self):
@@ -133,6 +134,47 @@ class ConfigManager:
         apps.append({"name": name, "pkg": pkg, "keyword": keyword})
         self.data["apps"] = apps
         self.save_config()
+
+    # ========== Logcat 自定义过滤词 ==========
+    def get_filter_words(self):
+        return self.data.get("filter_words", [])
+
+    def add_filter_word(self, word):
+        """添加过滤词。重名视为失败（返回 False）。"""
+        word = (word or "").strip()
+        if not word:
+            return False
+        words = self.data.get("filter_words", [])
+        if word in words:
+            return False
+        words.append(word)
+        self.data["filter_words"] = words
+        self.save_config()
+        return True
+
+    def update_filter_word(self, old, new):
+        """原位更新过滤词，保持顺序。"""
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if not old or not new or old == new:
+            return False
+        words = self.data.get("filter_words", [])
+        if old not in words or new in words:
+            return False
+        idx = words.index(old)
+        words[idx] = new
+        self.data["filter_words"] = words
+        self.save_config()
+        return True
+
+    def delete_filter_word(self, word):
+        words = self.data.get("filter_words", [])
+        if word not in words:
+            return False
+        words.remove(word)
+        self.data["filter_words"] = words
+        self.save_config()
+        return True
 
     def delete_app(self, name):
         apps = self.data.get("apps", [])

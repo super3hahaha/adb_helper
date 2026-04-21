@@ -9,11 +9,12 @@ import threading
 from core.platform_utils import PlatformUtils
 
 class LogcatWindow(ctk.CTkToplevel):
-    def __init__(self, parent, adb_helper, default_pkg="", log_func=None):
+    def __init__(self, parent, adb_helper, default_pkg="", log_func=None, config_manager=None):
         super().__init__(parent)
         self.adb_helper = adb_helper
         self.default_pkg = default_pkg
         self.log_func = log_func
+        self.config_manager = config_manager
         
         self.title("Real-time Logcat Monitor")
         self.geometry("1100x600")
@@ -109,8 +110,16 @@ class LogcatWindow(ctk.CTkToplevel):
         self.btn_pause = ctk.CTkButton(frame_toolbar, text="⏸️ Pause", width=80, command=self.toggle_pause)
         self.btn_pause.pack(side="right", padx=5)
         
-        ctk.CTkButton(frame_toolbar, text="🗑️ Clear", width=80, command=self.clear_logs, 
+        ctk.CTkButton(frame_toolbar, text="🗑️ Clear", width=80, command=self.clear_logs,
                       fg_color="gray", hover_color="gray30").pack(side="right", padx=5)
+
+        # 1.5 自定义过滤词快捷标签（Chips）
+        self.frame_chips = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_chips.pack(fill="x", padx=10, pady=(0, 5))
+        self.refresh_filter_chips()
+
+        # 每次窗口获得焦点时刷新 chips，捕捉用户在"设置"里对过滤词的编辑
+        self.bind("<FocusIn>", lambda e: self.refresh_filter_chips())
 
         # 2. Log Display Area
         self.textbox = ctk.CTkTextbox(self, font=("Consolas", 12))
@@ -130,6 +139,87 @@ class LogcatWindow(ctk.CTkToplevel):
         # Enable selection and copy (standard behavior for Text widget, but good to ensure)
         # CustomTkinter's CTkTextbox wraps a tk.Text, bindings should work on the internal widget if needed
         # But default CTkTextbox already supports selection and Ctrl+C.
+
+    def refresh_filter_chips(self):
+        """读取配置中的自定义过滤词，重新渲染 chip 行。config 变化后也调用此方法。"""
+        if not hasattr(self, "frame_chips"):
+            return
+
+        words = []
+        if self.config_manager is not None:
+            try:
+                words = self.config_manager.get_filter_words() or []
+            except Exception:
+                words = []
+
+        # 如果内容未变，避免无意义重建（防止频繁 FocusIn 造成闪烁）
+        cached = getattr(self, "_chip_words_cache", None)
+        if cached == words:
+            return
+        self._chip_words_cache = list(words)
+
+        for child in self.frame_chips.winfo_children():
+            child.destroy()
+
+        if not words:
+            ctk.CTkLabel(
+                self.frame_chips,
+                text="（未配置过滤词，请到 设置 → Logcat 自定义过滤词 添加）",
+                text_color="gray"
+            ).pack(side="left", padx=5)
+            return
+
+        ctk.CTkLabel(self.frame_chips, text="快捷:", text_color="gray").pack(side="left", padx=(5, 4))
+        for word in words:
+            btn = ctk.CTkButton(
+                self.frame_chips,
+                text=word,
+                height=24,
+                corner_radius=12,
+                fg_color="#3a7ebf",
+                hover_color="#2d5f8f",
+                command=lambda w=word: self.apply_filter_chip(w)
+            )
+            btn.pack(side="left", padx=3, pady=2)
+
+    def apply_filter_chip(self, word):
+        """
+        点击 chip 的联动逻辑：
+        1) Level 重置为 Verbose（抓全量日志，避免因级别过高漏掉目标日志）
+        2) Search 输入框清空，刷新高亮状态
+        3) 将过滤词写入 entry_pkg
+        4) 重置过滤相关状态（observed_pids / app_pids 等），等价于"切换过滤器"
+        5) 清空当前日志区，只显示应用新过滤词后的最新日志
+           注意：若 Level 发生变更，on_level_change 会重启 logcat 并自然得到新日志，
+           此时 clear_logs 等价于清空上一级别遗留的显示。
+        """
+        # 1) Level → Verbose；仅在变化时触发重启，避免无谓重建
+        level_changed = self.combo_level.get() != "Verbose"
+        if level_changed:
+            self.combo_level.set("Verbose")
+
+        # 2) Search 清空并刷新高亮/匹配状态
+        self.entry_search.delete(0, "end")
+        self.on_search_changed(None)
+
+        # 3) 过滤词写入
+        self.entry_pkg.delete(0, "end")
+        self.entry_pkg.insert(0, word)
+
+        # 4) 触发过滤器切换逻辑（should_show_line 内部会因 pkg_filter != last_pkg_filter 重置）
+        self.observed_pids.clear()
+        self.app_pids.clear()
+        self.last_pkg_filter = ""  # 强制下次 should_show_line 识别为新过滤器
+
+        # 5) 清空日志区
+        self.clear_logs()
+
+        # 如果 Level 变了，需要重启 logcat 才能真正拉取 Verbose 级别的流
+        if level_changed:
+            self.on_level_change("Verbose")
+
+        if self.log_func:
+            self.log_func(f"应用快捷过滤词: {word}", "INFO")
 
     def start_logcat(self):
         level_map = {"Verbose": "V", "Debug": "D", "Info": "I", "Warn": "W", "Error": "E"}

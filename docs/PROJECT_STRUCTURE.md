@@ -21,7 +21,7 @@ adb_helper/
 │   │   └── settings_tab.py      # 设置 Tab
 │   ├── components/          # 可复用 UI 组件
 │   │   ├── tooltip.py           # 悬浮提示框
-│   │   ├── logcat_window.py     # Logcat 实时日志窗口
+│   │   ├── logcat_window.py     # Logcat 实时日志窗口（含自定义过滤词快捷标签）
 │   │   ├── file_manager_window.py  # 设备文件管理器
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
 │   │   └── contact_selector.py  # 联系人选择对话框

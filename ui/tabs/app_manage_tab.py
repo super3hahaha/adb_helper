@@ -397,7 +397,7 @@ class AppManageTab(ctk.CTkFrame):
         
         # 打开独立窗口
         try:
-            self.logcat_window = LogcatWindow(self, self.adb_helper, default_pkg=pkg, log_func=self.log)
+            self.logcat_window = LogcatWindow(self, self.adb_helper, default_pkg=pkg, log_func=self.log, config_manager=self.config_manager)
             self.log("已打开 Logcat 监控窗口", "INFO")
         except Exception as e:
             self.log(f"打开 Logcat 窗口失败: {e}", "ERROR")

@@ -22,68 +22,68 @@ class SettingsTab(ctk.CTkFrame):
 
         # 1. 全局路径设置
         frame_path = ctk.CTkFrame(self)
-        frame_path.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_path, text="APK 默认目录:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
-        self.entry_apk_dir = ctk.CTkEntry(frame_path)
-        self.entry_apk_dir.pack(pady=2, padx=10, fill="x")
+        frame_path.pack(pady=2, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_path, text="APK 默认目录:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
+
+        self.entry_apk_dir = ctk.CTkEntry(frame_path, height=26)
+        self.entry_apk_dir.pack(pady=1, padx=10, fill="x")
         self.entry_apk_dir.insert(0, self.config_manager.get_apk_dir())
-        
-        ctk.CTkButton(frame_path, text="选择文件夹...", command=self.browse_apk_dir).pack(pady=(0, 5), padx=10, anchor="e")
+
+        ctk.CTkButton(frame_path, text="选择文件夹...", command=self.browse_apk_dir, height=26).pack(pady=(0, 3), padx=10, anchor="e")
 
         # 1.5 临时文件目录
-        ctk.CTkLabel(frame_path, text="临时文件目录 (Temp):", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+        ctk.CTkLabel(frame_path, text="临时文件目录 (Temp):", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
 
-        self.entry_temp_dir = ctk.CTkEntry(frame_path, state="readonly")
-        self.entry_temp_dir.pack(pady=2, padx=10, fill="x")
+        self.entry_temp_dir = ctk.CTkEntry(frame_path, state="readonly", height=26)
+        self.entry_temp_dir.pack(pady=1, padx=10, fill="x")
         self.entry_temp_dir.configure(state="normal")
         self.entry_temp_dir.insert(0, self.config_manager.get_temp_dir())
         self.entry_temp_dir.configure(state="readonly")
 
         frame_temp_btns = ctk.CTkFrame(frame_path, fg_color="transparent")
-        frame_temp_btns.pack(pady=(0, 5), padx=10, fill="x")
+        frame_temp_btns.pack(pady=(0, 3), padx=10, fill="x")
 
-        ctk.CTkButton(frame_temp_btns, text="设置路径", command=self.action_set_temp_path, width=100).pack(side="right", padx=(10, 0))
-        ctk.CTkButton(frame_temp_btns, text="打开目录", command=self.action_open_temp, width=100).pack(side="right")
+        ctk.CTkButton(frame_temp_btns, text="设置路径", command=self.action_set_temp_path, width=100, height=26).pack(side="right", padx=(10, 0))
+        ctk.CTkButton(frame_temp_btns, text="打开目录", command=self.action_open_temp, width=100, height=26).pack(side="right")
 
         # 2. 全局默认 (置顶) App 设置
         frame_pinned = ctk.CTkFrame(self)
-        frame_pinned.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_pinned, text="置顶App 设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
+        frame_pinned.pack(pady=2, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_pinned, text="置顶App 设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
+
         frame_pinned_content = ctk.CTkFrame(frame_pinned, fg_color="transparent")
-        frame_pinned_content.pack(pady=2, padx=10, fill="x")
-        
+        frame_pinned_content.pack(pady=(1, 3), padx=10, fill="x")
+
         ctk.CTkLabel(frame_pinned_content, text="当前置顶 App:").pack(side="left", padx=(0, 10))
-        
-        self.pinned_app_selector = ctk.CTkComboBox(frame_pinned_content, command=self.on_pinned_app_change, width=200)
-        self.pinned_app_selector.pack(side="left", fill="x", expand=True, pady=(0, 5))
+
+        self.pinned_app_selector = ctk.CTkComboBox(frame_pinned_content, command=self.on_pinned_app_change, width=200, height=26)
+        self.pinned_app_selector.pack(side="left", fill="x", expand=True)
         optimize_combobox_width(self.pinned_app_selector)
-        
+
         # 初始化置顶列表
         self.refresh_pinned_app_list()
 
         # 3. 自动化行为设置
         frame_automation = ctk.CTkFrame(self)
-        frame_automation.pack(pady=5, padx=10, fill="x")
+        frame_automation.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_automation, text="个性化设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+        ctk.CTkLabel(frame_automation, text="个性化设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
 
         self.check_auto_launch = ctk.CTkCheckBox(
-            frame_automation, 
+            frame_automation,
             text="成功清除数据或安装 APK 后，自动打开 App",
             command=self.toggle_auto_launch
         )
-        self.check_auto_launch.pack(pady=2, padx=10, anchor="w")
-        
+        self.check_auto_launch.pack(pady=1, padx=10, anchor="w")
+
         self.check_hide_global_log = ctk.CTkCheckBox(
             frame_automation,
             text="隐藏右侧全局日志",
             command=self.toggle_hide_global_log
         )
-        self.check_hide_global_log.pack(pady=(2, 5), padx=10, anchor="w")
+        self.check_hide_global_log.pack(pady=(1, 3), padx=10, anchor="w")
         
         # Initialize state
         if self.config_manager.get_auto_launch_enabled():
@@ -98,30 +98,55 @@ class SettingsTab(ctk.CTkFrame):
 
         # 4. App 录入管理
         frame_add = ctk.CTkFrame(self)
-        frame_add.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_add, text="新增/修改 App 配置:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
-        self.combo_app_name = ctk.CTkComboBox(frame_add, command=self.on_app_name_select)
-        self.combo_app_name.pack(pady=2, padx=10, fill="x")
+        frame_add.pack(pady=2, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_add, text="新增/修改 App 配置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
+
+        self.combo_app_name = ctk.CTkComboBox(frame_add, command=self.on_app_name_select, height=26)
+        self.combo_app_name.pack(pady=1, padx=10, fill="x")
         self.combo_app_name.set("")
-        
-        self.entry_app_keyword = ctk.CTkEntry(frame_add, placeholder_text="APK 文件名关键字 (如: wechat)")
-        self.entry_app_keyword.pack(pady=2, padx=10, fill="x")
-        
-        self.entry_app_pkg = ctk.CTkEntry(frame_add, placeholder_text="App 包名 (如: com.tencent.mm)")
-        self.entry_app_pkg.pack(pady=2, padx=10, fill="x")
-        
+
+        self.entry_app_keyword = ctk.CTkEntry(frame_add, placeholder_text="APK 文件名关键字 (如: wechat)", height=26)
+        self.entry_app_keyword.pack(pady=1, padx=10, fill="x")
+
+        self.entry_app_pkg = ctk.CTkEntry(frame_add, placeholder_text="App 包名 (如: com.tencent.mm)", height=26)
+        self.entry_app_pkg.pack(pady=1, padx=10, fill="x")
+
         frame_action = ctk.CTkFrame(frame_add, fg_color="transparent")
-        frame_action.pack(pady=5, padx=10, fill="x")
+        frame_action.pack(pady=(3, 3), padx=10, fill="x")
         frame_action.grid_columnconfigure(0, weight=7)
         frame_action.grid_columnconfigure(1, weight=3)
-        
-        ctk.CTkButton(frame_action, text="保存 / 更新", command=self.save_app_config, fg_color="#2d7d46", hover_color="#1e5c32").grid(row=0, column=0, padx=(0, 5), sticky="ew")
-        ctk.CTkButton(frame_action, text="删除", command=self.delete_app_config, fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, padx=(5, 0), sticky="ew")
+
+        ctk.CTkButton(frame_action, text="保存 / 更新", command=self.save_app_config, height=26, fg_color="#2d7d46", hover_color="#1e5c32").grid(row=0, column=0, padx=(0, 5), sticky="ew")
+        ctk.CTkButton(frame_action, text="删除", command=self.delete_app_config, height=26, fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, padx=(5, 0), sticky="ew")
 
         # 初始化 App 下拉列表
         self.refresh_app_name_combo()
+
+        # 5. Logcat 自定义过滤词管理
+        frame_filter = ctk.CTkFrame(self)
+        frame_filter.pack(pady=2, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_filter, text="Logcat 自定义过滤词:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
+
+        self.combo_filter_word = ctk.CTkComboBox(frame_filter, command=self.on_filter_word_select, height=26)
+        self.combo_filter_word.pack(pady=1, padx=10, fill="x")
+        self.combo_filter_word.set("")
+
+        self.entry_filter_word = ctk.CTkEntry(frame_filter, placeholder_text="过滤词 (包名 / 关键字，如: com.xxx 或 Exception)", height=26)
+        self.entry_filter_word.pack(pady=1, padx=10, fill="x")
+
+        frame_filter_action = ctk.CTkFrame(frame_filter, fg_color="transparent")
+        frame_filter_action.pack(pady=(3, 3), padx=10, fill="x")
+        frame_filter_action.grid_columnconfigure(0, weight=7)
+        frame_filter_action.grid_columnconfigure(1, weight=3)
+
+        ctk.CTkButton(frame_filter_action, text="保存 / 更新", command=self.save_filter_word, height=26,
+                      fg_color="#2d7d46", hover_color="#1e5c32").grid(row=0, column=0, padx=(0, 5), sticky="ew")
+        ctk.CTkButton(frame_filter_action, text="删除", command=self.delete_filter_word, height=26,
+                      fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, padx=(5, 0), sticky="ew")
+
+        self.refresh_filter_word_combo()
 
     def browse_apk_dir(self):
         path = filedialog.askdirectory(parent=self)
@@ -254,6 +279,64 @@ class SettingsTab(ctk.CTkFrame):
         toplevel = self.winfo_toplevel()
         if hasattr(toplevel, 'toggle_global_log'):
             toplevel.toggle_global_log(state)
+
+    # ========== Logcat 自定义过滤词 ==========
+    def refresh_filter_word_combo(self):
+        words = self.config_manager.get_filter_words()
+        self.combo_filter_word.configure(values=words if words else [])
+
+    def on_filter_word_select(self, choice):
+        self.entry_filter_word.delete(0, "end")
+        self.entry_filter_word.insert(0, choice)
+
+    def save_filter_word(self):
+        """下拉框值为空 => 新增；下拉框已选中某词 => 改名为 Entry 的新值"""
+        old = self.combo_filter_word.get().strip()
+        new = self.entry_filter_word.get().strip()
+        if not new:
+            messagebox.showwarning("提示", "过滤词不能为空", parent=self)
+            return
+
+        if old and old in self.config_manager.get_filter_words():
+            # 更新
+            if old == new:
+                return
+            if not self.config_manager.update_filter_word(old, new):
+                messagebox.showwarning("提示", f"过滤词 [{new}] 已存在或无效", parent=self)
+                return
+            self.log(f"已更新过滤词: {old} -> {new}", "SUCCESS")
+        else:
+            # 新增
+            if not self.config_manager.add_filter_word(new):
+                messagebox.showwarning("提示", f"过滤词 [{new}] 已存在", parent=self)
+                return
+            self.log(f"已新增过滤词: {new}", "SUCCESS")
+
+        self.combo_filter_word.set("")
+        self.entry_filter_word.delete(0, "end")
+        self.refresh_filter_word_combo()
+
+        if self.on_config_changed:
+            self.on_config_changed()
+
+    def delete_filter_word(self):
+        word = self.combo_filter_word.get().strip()
+        if not word:
+            messagebox.showwarning("提示", "请先选择要删除的过滤词", parent=self)
+            return
+        if word not in self.config_manager.get_filter_words():
+            messagebox.showwarning("提示", f"过滤词 [{word}] 不存在", parent=self)
+            return
+        if messagebox.askyesno("删除确认", f"确定要删除过滤词 [{word}] 吗？", parent=self):
+            if self.config_manager.delete_filter_word(word):
+                self.log(f"已删除过滤词: {word}", "SUCCESS")
+                self.combo_filter_word.set("")
+                self.entry_filter_word.delete(0, "end")
+                self.refresh_filter_word_combo()
+                if self.on_config_changed:
+                    self.on_config_changed()
+            else:
+                self.log(f"删除过滤词失败: {word}", "ERROR")
 
     def on_pinned_app_change(self, choice):
         self.config_manager.set_pinned_app(choice)
