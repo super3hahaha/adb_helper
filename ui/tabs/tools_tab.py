@@ -146,51 +146,80 @@ class ToolsTab(ctk.CTkFrame):
                       command=self.action_query_device_info).pack(pady=(2, 5), padx=10, fill="x")
 
     def _init_simulation_ui(self):
+        sim_btn_h = 28  # 紧凑按钮高度
+
         # 唤起系统时间设置
-        ctk.CTkButton(self.container_simulation, text="唤起系统时间与日期设置",
-                      command=self.action_open_date_settings).pack(pady=5, padx=10, fill="x")
+        ctk.CTkButton(self.container_simulation, text="唤起系统时间与日期设置", height=sim_btn_h,
+                      command=self.action_open_date_settings).pack(pady=(6, 3), padx=10, fill="x")
+
+        # 1.5 弱网/断网模拟
+        frame_proxy = ctk.CTkFrame(self.container_simulation)
+        frame_proxy.pack(pady=3, padx=10, fill="x")
+
+        proxy_header = ctk.CTkFrame(frame_proxy, fg_color="transparent")
+        proxy_header.pack(pady=(4, 1), padx=8, fill="x")
+        ctk.CTkLabel(proxy_header, text="弱网/断网模拟", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.lbl_proxy_status = ctk.CTkLabel(proxy_header, text="当前状态：检测中...", font=ctk.CTkFont(size=11), text_color="gray", cursor="hand2")
+        self.lbl_proxy_status.pack(side="left", padx=(8, 0))
+        # 点击状态文字 = 手动重新从设备读取 settings 并刷新
+        self.lbl_proxy_status.bind("<Button-1>", lambda e: self.refresh_proxy_status(verbose=True))
+
+        # 第一行：假代理（模拟高延迟/慢网）
+        row_proxy = ctk.CTkFrame(frame_proxy, fg_color="transparent")
+        row_proxy.pack(pady=(1, 2), padx=8, fill="x")
+        ctk.CTkButton(row_proxy, text="开启高延迟/慢网", height=sim_btn_h, command=self.action_enable_fake_proxy).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(row_proxy, text="清除假代理", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.action_disable_fake_proxy).pack(side="right", expand=True, fill="x", padx=(2, 0))
+
+        # 第二行：假 DNS（模拟网络超时 / 彻底断网）
+        row_dns = ctk.CTkFrame(frame_proxy, fg_color="transparent")
+        row_dns.pack(pady=(0, 4), padx=8, fill="x")
+        ctk.CTkButton(row_dns, text="开启网络超时", height=sim_btn_h, command=self.action_enable_fake_dns).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(row_dns, text="恢复正常DNS", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.action_disable_fake_dns).pack(side="right", expand=True, fill="x", padx=(2, 0))
+
+        # 首次加载时检测一次当前代理 / DNS 状态
+        self.after(500, self.refresh_proxy_status)
 
         # 2. 电池模拟
         frame_bat = ctk.CTkFrame(self.container_simulation)
-        frame_bat.pack(pady=5, padx=10, fill="x")
+        frame_bat.pack(pady=3, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_bat, text="电池状态模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
-        ctk.CTkButton(frame_bat, text="模拟低电量 (10%)", command=self.adb_helper.sim_low_battery).pack(pady=2, padx=10, fill="x")
-        ctk.CTkButton(frame_bat, text="模拟充满电 (100%)", command=self.adb_helper.sim_full_battery).pack(pady=2, padx=10, fill="x")
-        ctk.CTkButton(frame_bat, text="恢复真实电量", fg_color="#c42b1c", hover_color="#8a1f15", command=self.adb_helper.reset_battery).pack(pady=(2, 5), padx=10, fill="x")
+        ctk.CTkLabel(frame_bat, text="电池状态模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+
+        ctk.CTkButton(frame_bat, text="模拟低电量 (10%)", height=sim_btn_h, command=self.adb_helper.sim_low_battery).pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(frame_bat, text="模拟充满电 (100%)", height=sim_btn_h, command=self.adb_helper.sim_full_battery).pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(frame_bat, text="恢复真实电量", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.adb_helper.reset_battery).pack(pady=(1, 4), padx=8, fill="x")
 
         # 2.5 来电模拟
         frame_call = ctk.CTkFrame(self.container_simulation)
-        frame_call.pack(pady=5, padx=10, fill="x")
+        frame_call.pack(pady=3, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", command=self.adb_helper.sim_incoming_call).pack(pady=(2, 5), padx=10, fill="x")
+        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", height=sim_btn_h, command=self.adb_helper.sim_incoming_call).pack(pady=(1, 4), padx=8, fill="x")
 
         # 3. 网络模拟
         frame_net = ctk.CTkFrame(self.container_simulation)
-        frame_net.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_net, text="Wi-Fi 模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
+        frame_net.pack(pady=3, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_net, text="Wi-Fi 模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+
         grid_net = ctk.CTkFrame(frame_net, fg_color="transparent")
-        grid_net.pack(pady=(2, 5), padx=10, fill="x")
-        ctk.CTkButton(grid_net, text="断开 Wi-Fi", command=self.adb_helper.wifi_disable).pack(side="left", expand=True, padx=2)
-        ctk.CTkButton(grid_net, text="连接 Wi-Fi", command=self.adb_helper.wifi_enable).pack(side="right", expand=True, padx=2)
+        grid_net.pack(pady=(1, 4), padx=8, fill="x")
+        ctk.CTkButton(grid_net, text="断开 Wi-Fi", height=sim_btn_h, command=self.adb_helper.wifi_disable).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(grid_net, text="连接 Wi-Fi", height=sim_btn_h, command=self.adb_helper.wifi_enable).pack(side="right", expand=True, fill="x", padx=(2, 0))
 
         # 4. 铃声试听
         frame_ringtone = ctk.CTkFrame(self.container_simulation)
-        frame_ringtone.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_ringtone, text="铃声试听", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
-        ctk.CTkButton(frame_ringtone, text="试听来电铃声", command=lambda: self.action_play_ringtone("ringtone")).pack(pady=2, padx=10, fill="x")
-        ctk.CTkButton(frame_ringtone, text="试听通知铃声", command=lambda: self.action_play_ringtone("notification_sound")).pack(pady=2, padx=10, fill="x")
-        ctk.CTkButton(frame_ringtone, text="试听闹钟铃声", command=lambda: self.action_play_ringtone("alarm_alert")).pack(pady=2, padx=10, fill="x")
+        frame_ringtone.pack(pady=3, padx=10, fill="x")
 
-        self.btn_contact_ringtone = ctk.CTkButton(frame_ringtone, text="试听联系人铃声", command=self.action_contact_ringtone)
-        self.btn_contact_ringtone.pack(pady=(2, 5), padx=10, fill="x")
+        ctk.CTkLabel(frame_ringtone, text="铃声试听", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+
+        ctk.CTkButton(frame_ringtone, text="试听来电铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("ringtone")).pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(frame_ringtone, text="试听通知铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("notification_sound")).pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(frame_ringtone, text="试听闹钟铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("alarm_alert")).pack(pady=1, padx=8, fill="x")
+
+        self.btn_contact_ringtone = ctk.CTkButton(frame_ringtone, text="试听联系人铃声", height=sim_btn_h, command=self.action_contact_ringtone)
+        self.btn_contact_ringtone.pack(pady=(1, 4), padx=8, fill="x")
 
     def action_play_ringtone(self, sound_type):
         def _thread():
@@ -418,6 +447,128 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
         
+        threading.Thread(target=_thread, daemon=True).start()
+
+    FAKE_DNS_HOST = "fake.domain.test"
+
+    def _run_adb_settings_cmd(self, args, action_label):
+        """执行一条 adb settings 命令，打印命令与结果日志。返回 (ok, stdout)。"""
+        device_id = self.adb_helper.current_device_id
+        if not device_id:
+            self.log(f"未选择设备，无法执行{action_label}", "ERROR")
+            return False, ""
+        cmd = [self.adb_helper.adb_cmd, "-s", device_id, "shell", "settings"] + list(args)
+        self.log(f"执行命令: {' '.join(cmd)}", "INFO")
+        try:
+            kwargs = self.adb_helper._get_subprocess_kwargs()
+            result = subprocess.run(cmd, **kwargs)
+            if result.returncode == 0:
+                out = (result.stdout or "").strip()
+                self.log(f"结果: {out or 'Success'}", "SUCCESS")
+                return True, out
+            err = (result.stderr or "").strip() or "Failed"
+            self.log(f"结果: {err}", "ERROR")
+            return False, ""
+        except Exception as e:
+            self.log(f"{action_label}异常: {e}", "ERROR")
+            return False, ""
+
+    def action_enable_fake_proxy(self):
+        """设置一个无效的 HTTP 代理以模拟高延迟/慢网"""
+        def _thread():
+            self._run_adb_settings_cmd(
+                ["put", "global", "http_proxy", "1.1.1.1:9999"],
+                "开启高延迟/慢网",
+            )
+            self.refresh_proxy_status(verbose=True)
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_disable_fake_proxy(self):
+        """清除 HTTP 代理"""
+        def _thread():
+            self._run_adb_settings_cmd(
+                ["put", "global", "http_proxy", ":0"],
+                "清除假代理",
+            )
+            self.refresh_proxy_status(verbose=True)
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_enable_fake_dns(self):
+        """将 Private DNS 指向不可解析的域名，模拟网络超时/彻底断网"""
+        def _thread():
+            ok1, _ = self._run_adb_settings_cmd(
+                ["put", "global", "private_dns_mode", "hostname"],
+                "开启网络超时",
+            )
+            if ok1:
+                self._run_adb_settings_cmd(
+                    ["put", "global", "private_dns_specifier", self.FAKE_DNS_HOST],
+                    "开启网络超时",
+                )
+            self.refresh_proxy_status(verbose=True)
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_disable_fake_dns(self):
+        """恢复 Private DNS 为自动模式"""
+        def _thread():
+            self._run_adb_settings_cmd(
+                ["put", "global", "private_dns_mode", "opportunistic"],
+                "恢复正常DNS",
+            )
+            self.refresh_proxy_status(verbose=True)
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def refresh_proxy_status(self, verbose=False):
+        """后台执行 adb shell settings get 读取真实值，综合更新状态标签。
+
+        verbose=True 时，会把 3 条查询的返回值合并成一行写入 Global Log，
+        方便用户在日志面板直接看到状态标签是由哪些返回值推算出来的。
+        """
+        def _thread():
+            try:
+                device_id = self.adb_helper.current_device_id
+                if not device_id:
+                    self.after(0, lambda: self.lbl_proxy_status.configure(text="当前状态：无设备", text_color="gray"))
+                    return
+
+                kwargs = self.adb_helper._get_subprocess_kwargs()
+
+                def get_setting(key):
+                    r = subprocess.run(
+                        [self.adb_helper.adb_cmd, "-s", device_id, "shell", "settings", "get", "global", key],
+                        **kwargs,
+                    )
+                    return (r.stdout or "").strip()
+
+                proxy_val = get_setting("http_proxy")
+                dns_mode = get_setting("private_dns_mode")
+                dns_spec = get_setting("private_dns_specifier")
+
+                if verbose:
+                    self.log(
+                        f"状态查询: http_proxy={proxy_val or 'null'} | "
+                        f"private_dns_mode={dns_mode or 'null'} | "
+                        f"private_dns_specifier={dns_spec or 'null'}",
+                        "INFO",
+                    )
+
+                proxy_active = bool(proxy_val) and proxy_val not in ("null", ":0")
+                dns_active = (dns_mode == "hostname") and (dns_spec == self.FAKE_DNS_HOST)
+
+                if proxy_active and dns_active:
+                    text, color = "当前状态：混合异常生效中", "#c42b1c"
+                elif proxy_active:
+                    text, color = "当前状态：假代理生效中", "#c42b1c"
+                elif dns_active:
+                    text, color = "当前状态：假DNS生效中", "#c42b1c"
+                else:
+                    text, color = "当前状态：正常", "gray"
+
+                self.after(0, lambda: self.lbl_proxy_status.configure(text=text, text_color=color))
+            except Exception as e:
+                if verbose:
+                    self.log(f"状态查询异常: {e}", "ERROR")
+                self.after(0, lambda: self.lbl_proxy_status.configure(text="当前状态：未知", text_color="gray"))
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_open_date_settings(self):
