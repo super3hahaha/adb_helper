@@ -801,7 +801,8 @@ class ADBHelper:
                 time.sleep(2)
                 
                 remote_path = "/sdcard/screen_record_tmp.mp4"
-                local_filename = f"screenrecord_{int(time.time())}.mp4"
+                device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
+                local_filename = f"screenrecord_{int(time.time())}{device_suffix}.mp4"
                 local_path = os.path.join(temp_dir, local_filename)
                 
                 self.execute_adb_command(["adb", "pull", remote_path, local_path])
@@ -822,7 +823,8 @@ class ADBHelper:
         def _thread():
             try:
                 remote_path = "/sdcard/screen.png"
-                local_filename = f"screenshot_{int(time.time())}.png"
+                device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
+                local_filename = f"screenshot_{int(time.time())}{device_suffix}.png"
                 local_path = os.path.join(temp_dir, local_filename)
                 
                 self.execute_adb_command(["adb", "shell", "screencap", "-p", remote_path])
