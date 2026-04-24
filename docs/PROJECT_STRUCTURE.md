@@ -8,9 +8,11 @@ adb_helper/
 ├── requirements.txt         # Python 依赖清单
 ├── core/                    # 核心业务逻辑
 │   ├── adb_helper.py        # ADB 命令封装与设备管理
+│   ├── config.py            # 应用级常量：APP_VERSION / APP_NAME / GITHUB_REPO
 │   ├── config_manager.py    # 配置读写与持久化
 │   ├── file_helper.py       # 文件与临时目录操作
-│   └── platform_utils.py    # 跨平台适配工具
+│   ├── platform_utils.py    # 跨平台适配工具
+│   └── updater.py           # GitHub Releases 版本检查、下载、Windows 自动替换脚本
 ├── ui/                      # 界面层
 │   ├── main_window.py       # 主窗口与 Tab 容器
 │   ├── utils.py             # UI 工具函数
@@ -26,6 +28,7 @@ adb_helper/
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
 │   │   └── contact_selector.py  # 联系人选择对话框
 │   └── windows/             # 独立功能窗口
+│       ├── update_window.py        # 检查更新 / 下载进度 / 触发自动替换
 │       └── screenshot_preview/     # 截图预览与标注（Mixin 拆分）
 │           ├── __init__.py              # 对外只 re-export ScreenshotPreviewWindow
 │           ├── preview_window.py        # 主窗口：__init__/工具栏/另存/剪贴板/合成导出
@@ -49,6 +52,7 @@ adb_helper/
 | `customtkinter` | 第三方 | 现代化 Tkinter UI 框架，提供主窗口、按钮、输入框、TabView 等组件 |
 | `Pillow` | 第三方 | 图像处理库，用于截图预览、标注绘制和图片格式转换 |
 | `tkinterdnd2` | 第三方 | 拖拽支持库，实现文件拖拽安装 APK 和拖拽上传文件 |
+| `requests` | 第三方 | HTTP 客户端，用于 GitHub Releases 查询与更新包流式下载（缺失时退化到 urllib） |
 | `pywin32` | 第三方 (Windows) | Windows 专用，提供剪贴板等系统级功能 |
 | `tkinter` | 标准库 | Python 内置 GUI 库，提供 Treeview、Text、messagebox、filedialog 等基础组件 |
 | `subprocess` | 标准库 | 执行 ADB 命令与外部进程调用 |
@@ -58,3 +62,5 @@ adb_helper/
 | `shutil` | 标准库 | 文件与目录的复制、移动操作 |
 | `glob` | 标准库 | 文件路径模式匹配，用于扫描 APK 文件 |
 | `os` / `sys` | 标准库 | 系统路径、环境变量与平台判断 |
+| `urllib` | 标准库 | `requests` 不可用时的 HTTP 回退（Updater 版本检查 / 下载） |
+| `tempfile` | 标准库 | 下载的更新包与 Windows 更新脚本的临时存放位置 |

@@ -7,6 +7,7 @@ from datetime import datetime
 import tkinter as tk
 
 from core.adb_helper import ADBHelper
+from core.config import APP_NAME, APP_VERSION
 from core.config_manager import ConfigManager
 from ui.tabs.app_manage_tab import AppManageTab
 from ui.tabs.tools_tab import ToolsTab
@@ -30,7 +31,7 @@ class MainWindow(TkinterDnD_CTk):
         self.adb_helper = ADBHelper(log_callback=self.log_message)
 
         # 窗口设置
-        self.title("可视化 ADB 管理工具")
+        self.title(APP_NAME)
         self.geometry("1000x750")
         
         # 修复 Mac 下的快捷键 (Cmd+C/V/X/A)
@@ -102,9 +103,11 @@ class MainWindow(TkinterDnD_CTk):
         self.bind_all("<Command-A>", lambda e: _on_mac_shortcut(e, "SelectAll"))
 
     def create_device_selector(self):
-        """创建全局设备选择器"""
+        """创建全局设备选择器 + 右侧版本/检查更新区域"""
         self.device_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.device_frame.grid(row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(10, 0))
+        self.device_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(10, 0))
+        # col=3 作为弹性空列，把版本/按钮推到最右
+        self.device_frame.grid_columnconfigure(3, weight=1)
 
         ctk.CTkLabel(self.device_frame, text="当前设备:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=(0, 10))
 
@@ -126,9 +129,28 @@ class MainWindow(TkinterDnD_CTk):
             command=self.refresh_device_list
         )
         self.btn_refresh_devices.grid(row=0, column=2)
-        
+
+        ctk.CTkLabel(
+            self.device_frame,
+            text=f"当前版本：v{APP_VERSION}",
+            font=ctk.CTkFont(weight="bold"),
+        ).grid(row=0, column=4, padx=(20, 10))
+
+        self.btn_check_update = ctk.CTkButton(
+            self.device_frame,
+            text="检查更新",
+            width=80,
+            command=self.action_check_update,
+        )
+        self.btn_check_update.grid(row=0, column=5)
+
         # 初始刷新
         self.refresh_device_list()
+
+    def action_check_update(self):
+        """检查并更新到最新 Release。"""
+        from ui.windows.update_window import UpdateFlow
+        UpdateFlow(self, log_func=self.log_message).start()
 
     def refresh_device_list(self):
         """刷新设备列表"""
