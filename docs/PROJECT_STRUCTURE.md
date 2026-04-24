@@ -26,7 +26,14 @@ adb_helper/
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
 │   │   └── contact_selector.py  # 联系人选择对话框
 │   └── windows/             # 独立功能窗口
-│       └── screenshot_preview.py  # 截图预览与标注
+│       └── screenshot_preview/     # 截图预览与标注（Mixin 拆分）
+│           ├── __init__.py              # 对外只 re-export ScreenshotPreviewWindow
+│           ├── preview_window.py        # 主窗口：__init__/工具栏/另存/剪贴板/合成导出
+│           ├── canvas_mixin.py          # 图像显示/缩放/平移/重绘/坐标变换
+│           ├── drawing_tools_mixin.py   # 矩形/箭头 鼠标事件分发
+│           ├── text_annotation_mixin.py # 8 控制点文字编辑器
+│           ├── history_mixin.py         # Undo / Redo 栈
+│           └── shared.py                # 字体/文本换行/常量 纯函数
 ├── resources/               # 内置资源
 │   └── ADBKeyboard.apk      # ADB Keyboard 输入法
 ├── docs/                    # 文档资源
