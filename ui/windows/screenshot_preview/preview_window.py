@@ -29,6 +29,9 @@ try:
 except ImportError:
     win32clipboard = None
 
+from core.platform_utils import PlatformUtils
+from ui.components.tooltip import ModernTooltip
+
 from .canvas_mixin import CanvasMixin
 from .drawing_tools_mixin import DrawingToolsMixin
 from .text_annotation_mixin import TextAnnotationMixin
@@ -37,6 +40,25 @@ from .shared import (
     DEFAULT_LINE_WIDTH,
     get_pil_font, wrap_text_pil,
 )
+
+
+def _build_shortcut_sections():
+    """根据平台动态构造"快捷键一览"弹窗内容。"""
+    mod = "⌘" if PlatformUtils.get_os_type() == "mac" else "Ctrl"
+    return [
+        ("视图操作",
+         f"空格 + 鼠标拖动  —  临时切换为平移模式（松开空格恢复原模式）\n"
+         f"{mod} + 滚轮  —  以鼠标位置为中心缩放画布\n"
+         f"滚轮  —  垂直滚动画布"),
+        ("文字输入（编辑文字时）",
+         f"Esc  —  取消当前文字输入（不保存）"),
+        ("编辑 / 历史",
+         f"{mod} + Z  —  撤销\n"
+         f"{mod} + Y  —  重做"),
+        ("文件操作",
+         f"{mod} + S  —  保存到临时文件夹\n"
+         f"{mod} + C  —  复制带标注的图片到剪贴板"),
+    ]
 
 
 class ScreenshotPreviewWindow(
@@ -201,7 +223,15 @@ class ScreenshotPreviewWindow(
         self.control_frame = ctk.CTkFrame(self)
         self.control_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
 
-        ctk.CTkLabel(self.control_frame, text="提示: 按住空格+鼠标拖动，Ctrl+滚轮缩放").pack(side="left", padx=10)
+        # 快捷键按钮（悬停弹窗，无点击行为）
+        self.btn_shortcuts = ctk.CTkButton(
+            self.control_frame, text="⌨ 快捷键",
+            width=90, height=28,
+            fg_color="gray50", hover_color="gray40",
+            command=lambda: None,
+        )
+        self.btn_shortcuts.pack(side="left", padx=10, pady=10)
+        ModernTooltip(self.btn_shortcuts, sections=_build_shortcut_sections(), max_width=560)
 
         # 从右向左添加，先添加的在最右
         self.btn_save = ctk.CTkButton(self.control_frame, text="保存", command=self.save_to_temp)

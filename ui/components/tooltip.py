@@ -15,7 +15,7 @@ class ModernTooltip:
     DELAY_MS = 400          # 鼠标悬停延迟显示时间
     OFFSET_X = 20           # 鼠标右下方偏移
     OFFSET_Y = 20
-    MAX_WIDTH = 380         # 最大宽度
+    MAX_WIDTH = 380         # 最大宽度（默认）
 
     # 浅色主题配色
     BG_COLOR = "#F8F9FA"
@@ -25,13 +25,15 @@ class ModernTooltip:
     FONT_FAMILY = "Microsoft YaHei"
     FONT_SIZE = 9
 
-    def __init__(self, widget, sections):
+    def __init__(self, widget, sections, max_width=None):
         """
         :param widget: 要绑定的控件
         :param sections: 结构化数据 [(标题, 描述), ...]
+        :param max_width: 可选，覆盖默认 MAX_WIDTH（例如快捷键列表需要更宽以避免换行）
         """
         self.widget = widget
         self.sections = sections
+        self.max_width = max_width if max_width is not None else self.MAX_WIDTH
         self._tooltip_window = None
         self._after_id = None
 
@@ -85,7 +87,7 @@ class ModernTooltip:
                 font=(self.FONT_FAMILY, self.FONT_SIZE, "bold"),
                 fg=self.TITLE_COLOR, bg=self.BG_COLOR,
                 anchor="w", justify="left",
-                wraplength=self.MAX_WIDTH,
+                wraplength=self.max_width,
             )
             lbl_title.pack(anchor="w")
 
@@ -95,7 +97,7 @@ class ModernTooltip:
                 font=(self.FONT_FAMILY, self.FONT_SIZE),
                 fg=self.TEXT_COLOR, bg=self.BG_COLOR,
                 anchor="w", justify="left",
-                wraplength=self.MAX_WIDTH,
+                wraplength=self.max_width,
             )
             lbl_desc.pack(anchor="w", pady=(1, 0))
 
