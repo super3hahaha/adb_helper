@@ -45,14 +45,16 @@ class ToolsTab(ctk.CTkFrame):
         self.on_category_change(self.category_var.get())
 
     def _init_system_ui(self):
+        sys_btn_h = 28  # 紧凑按钮高度
+
         # 1. 设备检查与输入
         frame_dev = ctk.CTkFrame(self.container_system)
-        frame_dev.pack(pady=5, padx=10, fill="x")
-        
+        frame_dev.pack(pady=3, padx=10, fill="x")
+
         frame_dev_header = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        frame_dev_header.pack(pady=(5, 2), padx=10, fill="x")
+        frame_dev_header.pack(pady=(4, 1), padx=8, fill="x")
         ctk.CTkLabel(frame_dev_header, text="文本输入", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        self.help_btn = ctk.CTkButton(frame_dev_header, text="?", width=28, height=28, corner_radius=14, fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.help_btn = ctk.CTkButton(frame_dev_header, text="?", width=22, height=22, corner_radius=11, fg_color="gray50", hover_color="gray40", command=lambda: None)
         self.help_btn.pack(side="left", padx=(5, 0))
         ModernTooltip(self.help_btn, sections=[
             ("模拟按键输入 (仅 ASCII)",
@@ -66,45 +68,45 @@ class ToolsTab(ctk.CTkFrame):
         ])
 
         # 发送文本 - 模拟按键模式
-        ctk.CTkLabel(frame_dev, text="模拟按键输入 (仅支持英文字母、数字和常见符号，无需安装)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
+        ctk.CTkLabel(frame_dev, text="模拟按键输入 (仅支持英文字母、数字和常见符号，无需安装)", font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(2, 0), anchor="w", padx=8)
         raw_input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        raw_input_frame.pack(pady=(0, 2), padx=10, fill="x")
-        self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, placeholder_text="输入要发送的文本...")
+        raw_input_frame.pack(pady=(0, 1), padx=8, fill="x")
+        self.entry_raw_input_text = ctk.CTkEntry(raw_input_frame, height=sys_btn_h, placeholder_text="输入要发送的文本...")
         self.entry_raw_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ctk.CTkButton(raw_input_frame, text="发送", width=60, command=self.action_send_raw_text).pack(side="right")
+        ctk.CTkButton(raw_input_frame, text="发送", width=56, height=sys_btn_h, command=self.action_send_raw_text).pack(side="right")
         ctk.CTkButton(raw_input_frame, text="x", width=20, height=20, fg_color="transparent", hover_color="gray70", text_color="gray50", font=ctk.CTkFont(size=11), command=lambda: self.entry_raw_input_text.delete(0, "end")).pack(side="right", padx=(0, 2))
 
         # 发送文本 - ADB Keyboard 模式
-        ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(5, 0), anchor="w", padx=10)
+        ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(2, 0), anchor="w", padx=8)
         input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        input_frame.pack(pady=(0, 5), padx=10, fill="x")
-        self.entry_input_text = ctk.CTkEntry(input_frame, placeholder_text="输入要发送的文本...")
+        input_frame.pack(pady=(0, 4), padx=8, fill="x")
+        self.entry_input_text = ctk.CTkEntry(input_frame, height=sys_btn_h, placeholder_text="输入要发送的文本...")
         self.entry_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ctk.CTkButton(input_frame, text="发送", width=60, command=self.action_send_text).pack(side="right")
+        ctk.CTkButton(input_frame, text="发送", width=56, height=sys_btn_h, command=self.action_send_text).pack(side="right")
         ctk.CTkButton(input_frame, text="x", width=20, height=20, fg_color="transparent", hover_color="gray70", text_color="gray50", font=ctk.CTkFont(size=11), command=lambda: self.entry_input_text.delete(0, "end")).pack(side="right", padx=(0, 2))
 
         # 1.5 文件传输 (Push 至设备)
         frame_push = ctk.CTkFrame(self.container_system)
-        frame_push.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_push, text="文件传输 (Push 至设备)", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
+        frame_push.pack(pady=3, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_push, text="文件传输 (Push 至设备)", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+
         # 目标路径设置
         path_frame = ctk.CTkFrame(frame_push, fg_color="transparent")
-        path_frame.pack(pady=2, padx=10, fill="x")
+        path_frame.pack(pady=1, padx=8, fill="x")
         ctk.CTkLabel(path_frame, text="目标路径:").pack(side="left", padx=(0, 5))
-        self.entry_remote_path = ctk.CTkEntry(path_frame)
+        self.entry_remote_path = ctk.CTkEntry(path_frame, height=sys_btn_h)
         self.entry_remote_path.insert(0, "/sdcard/Download/")
         self.entry_remote_path.pack(side="left", fill="x", expand=True)
-        
+
         # 拖拽感应区
-        self.drop_zone = ctk.CTkFrame(frame_push, height=80, fg_color="#e0e0e0", border_width=2, border_color="#aaaaaa")
-        self.drop_zone.pack(pady=(2, 5), padx=10, fill="x")
+        self.drop_zone = ctk.CTkFrame(frame_push, height=70, fg_color="#e0e0e0", border_width=2, border_color="#aaaaaa")
+        self.drop_zone.pack(pady=(2, 3), padx=8, fill="x")
         self.drop_zone.pack_propagate(False) # 保持高度
-        
-        lbl_drop = ctk.CTkLabel(self.drop_zone, text="请将文件或文件夹拖拽至此区域自动导入", text_color="#555555")
+
+        lbl_drop = ctk.CTkLabel(self.drop_zone, text="请将文件或文件夹拖拽至此区域自动导入", font=ctk.CTkFont(size=11), text_color="#555555")
         lbl_drop.place(relx=0.5, rely=0.5, anchor="center")
-        
+
         # 注册拖拽事件 (假设主窗口已经初始化了 TkinterDnD)
         # 需要使用 tkdnd 的 DND_FILES 常量，通常通过 widget.drop_target_register 注册
         try:
@@ -115,35 +117,44 @@ class ToolsTab(ctk.CTkFrame):
             self.log(f"拖拽功能初始化失败，可能未安装 tkinterdnd2: {e}", "ERROR")
 
         # 设备文件管理器
-        self.file_manager_btn = ctk.CTkButton(frame_push, text="设备文件导出", command=self.open_device_file_manager)
-        self.file_manager_btn.pack(pady=(5, 5), padx=10, fill="x")
+        self.file_manager_btn = ctk.CTkButton(frame_push, text="设备文件导出", height=sys_btn_h, command=self.open_device_file_manager)
+        self.file_manager_btn.pack(pady=(2, 4), padx=8, fill="x")
 
         # 4. 无线调试 (Wireless Debugging)
         frame_wireless = ctk.CTkFrame(self.container_system)
-        frame_wireless.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_wireless, text="无线调试 (Wireless Debugging)", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
+        frame_wireless.pack(pady=3, padx=10, fill="x")
+
+        ctk.CTkLabel(frame_wireless, text="无线调试 (Wireless Debugging)", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
         frame_wireless_btns = ctk.CTkFrame(frame_wireless, fg_color="transparent")
-        frame_wireless_btns.pack(pady=(2, 5), padx=10, fill="x")
+        frame_wireless_btns.pack(pady=(1, 4), padx=8, fill="x")
         frame_wireless_btns.grid_columnconfigure(0, weight=1, uniform="wb")
         frame_wireless_btns.grid_columnconfigure(1, weight=1, uniform="wb")
 
-        ctk.CTkButton(frame_wireless_btns, text="开启无线调试", command=self.action_start_wireless_debug).grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        ctk.CTkButton(frame_wireless_btns, text="关闭无线调试", command=self.action_stop_wireless_debug, fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        ctk.CTkButton(frame_wireless_btns, text="开启无线调试", height=sys_btn_h, command=self.action_start_wireless_debug).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ctk.CTkButton(frame_wireless_btns, text="关闭无线调试", height=sys_btn_h, command=self.action_stop_wireless_debug, fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         # 5. 系统工具
         frame_sys = ctk.CTkFrame(self.container_system)
-        frame_sys.pack(pady=5, padx=10, fill="x")
-        
-        ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2), anchor="w", padx=10)
-        
-        ctk.CTkButton(frame_sys, text="清除 Google Play 数据",
-                      command=self.action_clear_google_play,
-                      fg_color="#e0a800", hover_color="#b08800").pack(pady=2, padx=10, fill="x")
+        frame_sys.pack(pady=3, padx=10, fill="x")
 
-        ctk.CTkButton(frame_sys, text="查询设备系统版本",
-                      command=self.action_query_device_info).pack(pady=(2, 5), padx=10, fill="x")
+        ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+
+        ctk.CTkButton(frame_sys, text="清除 Google Play 数据", height=sys_btn_h,
+                      command=self.action_clear_google_play,
+                      fg_color="#e0a800", hover_color="#b08800").pack(pady=1, padx=8, fill="x")
+
+        ctk.CTkButton(frame_sys, text="查询设备系统版本", height=sys_btn_h,
+                      command=self.action_query_device_info).pack(pady=1, padx=8, fill="x")
+
+        frame_nav_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
+        frame_nav_btns.pack(pady=(1, 4), padx=8, fill="x")
+        frame_nav_btns.grid_columnconfigure(0, weight=1, uniform="nav")
+        frame_nav_btns.grid_columnconfigure(1, weight=1, uniform="nav")
+        ctk.CTkButton(frame_nav_btns, text="切换全面屏手势", height=sys_btn_h,
+                      command=self.action_enable_gesture_nav).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ctk.CTkButton(frame_nav_btns, text="切换为三键导航", height=sys_btn_h,
+                      command=self.action_enable_threebutton_nav).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
     def _init_simulation_ui(self):
         sim_btn_h = 28  # 紧凑按钮高度
@@ -446,7 +457,31 @@ class ToolsTab(ctk.CTkFrame):
                     self.log("清除失败，请检查设备连接状态。", "ERROR")
             except Exception as e:
                 self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
-        
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_enable_gesture_nav(self):
+        def _thread():
+            try:
+                success, output = self.adb_helper.enable_gesture_nav()
+                if success:
+                    self.log("已切换为全面屏手势导航", "SUCCESS")
+                else:
+                    self.log(f"切换全面屏手势失败: {output}", "ERROR")
+            except Exception as e:
+                self.log(f"切换全面屏手势异常: {e}", "ERROR")
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_enable_threebutton_nav(self):
+        def _thread():
+            try:
+                success, output = self.adb_helper.enable_threebutton_nav()
+                if success:
+                    self.log("已切换为三键导航", "SUCCESS")
+                else:
+                    self.log(f"切换三键导航失败: {output}", "ERROR")
+            except Exception as e:
+                self.log(f"切换三键导航异常: {e}", "ERROR")
         threading.Thread(target=_thread, daemon=True).start()
 
     FAKE_DNS_HOST = "fake.domain.test"

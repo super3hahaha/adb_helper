@@ -391,6 +391,14 @@ class ADBHelper:
         """清除 Google Play 商店数据"""
         return self.execute_adb_command(["adb", "shell", "pm", "clear", "com.android.vending"])
 
+    def enable_gesture_nav(self):
+        """切换为全面屏手势导航"""
+        return self.execute_adb_command(["adb", "shell", "cmd", "overlay", "enable", "com.android.internal.systemui.navbar.gestural"])
+
+    def enable_threebutton_nav(self):
+        """切换为三键导航"""
+        return self.execute_adb_command(["adb", "shell", "cmd", "overlay", "enable", "com.android.internal.systemui.navbar.threebutton"])
+
     # --- File Manager Logic ---
 
     def list_device_files(self, remote_path: str):
