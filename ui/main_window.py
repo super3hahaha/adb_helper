@@ -267,9 +267,8 @@ class MainWindow(TkinterDnD_CTk):
         self.log_message("正在刷新全局 App 列表...", "INFO")
         
         # 1. 刷新 App 操作页
-        # 强制选中置顶 App (因为这通常是用户刚在设置里改的)
         if hasattr(self, 'tab_app'):
-            self.tab_app.refresh_app_list(force_select_pinned=True)
+            self.tab_app.refresh_app_list()
             
         # 2. 刷新 APK 管理页 (如果有)
         if hasattr(self, 'tab_apk_manager') and hasattr(self.tab_apk_manager, 'refresh_app_list'):

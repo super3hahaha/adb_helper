@@ -47,25 +47,7 @@ class SettingsTab(ctk.CTkFrame):
         ctk.CTkButton(frame_temp_btns, text="设置路径", command=self.action_set_temp_path, width=100, height=26).pack(side="right", padx=(10, 0))
         ctk.CTkButton(frame_temp_btns, text="打开目录", command=self.action_open_temp, width=100, height=26).pack(side="right")
 
-        # 2. 全局默认 (置顶) App 设置
-        frame_pinned = ctk.CTkFrame(self)
-        frame_pinned.pack(pady=2, padx=10, fill="x")
-
-        ctk.CTkLabel(frame_pinned, text="置顶App 设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
-
-        frame_pinned_content = ctk.CTkFrame(frame_pinned, fg_color="transparent")
-        frame_pinned_content.pack(pady=(1, 3), padx=10, fill="x")
-
-        ctk.CTkLabel(frame_pinned_content, text="当前置顶 App:").pack(side="left", padx=(0, 10))
-
-        self.pinned_app_selector = ctk.CTkComboBox(frame_pinned_content, command=self.on_pinned_app_change, width=200, height=26)
-        self.pinned_app_selector.pack(side="left", fill="x", expand=True)
-        optimize_combobox_width(self.pinned_app_selector)
-
-        # 初始化置顶列表
-        self.refresh_pinned_app_list()
-
-        # 3. 自动化行为设置
+        # 2. 自动化行为设置
         frame_automation = ctk.CTkFrame(self)
         frame_automation.pack(pady=2, padx=10, fill="x")
 
@@ -211,9 +193,7 @@ class SettingsTab(ctk.CTkFrame):
         self.entry_app_keyword.delete(0, "end")
         self.entry_app_pkg.delete(0, "end")
         
-        # 刷新相关列表
         self.refresh_app_name_combo()
-        self.refresh_pinned_app_list()
         
         if self.on_config_changed:
             self.on_config_changed()
@@ -239,25 +219,11 @@ class SettingsTab(ctk.CTkFrame):
                 self.entry_app_pkg.delete(0, "end")
                 
                 self.refresh_app_name_combo()
-                self.refresh_pinned_app_list()
                 
                 if self.on_config_changed:
                     self.on_config_changed()
             else:
                 self.log(f"删除 App 配置失败: {name}", "ERROR")
-
-    def refresh_pinned_app_list(self):
-        apps = self.config_manager.get_apps()
-        app_names = [app['name'] for app in apps]
-        self.pinned_app_selector.configure(values=app_names)
-        
-        pinned = self.config_manager.get_pinned_app()
-        if pinned and pinned in app_names:
-            self.pinned_app_selector.set(pinned)
-        elif app_names:
-            self.pinned_app_selector.set("请选择置顶 App")
-        else:
-            self.pinned_app_selector.set("暂无 App")
 
     def toggle_auto_launch(self):
         state = self.check_auto_launch.get() == 1
@@ -338,9 +304,3 @@ class SettingsTab(ctk.CTkFrame):
             else:
                 self.log(f"删除过滤词失败: {word}", "ERROR")
 
-    def on_pinned_app_change(self, choice):
-        self.config_manager.set_pinned_app(choice)
-        self.log(f"已将 [{choice}] 设为全局默认置顶", "SUCCESS")
-        
-        if self.on_config_changed:
-            self.on_config_changed()

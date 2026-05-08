@@ -7,6 +7,7 @@ class ConfigManager:
         "apk_dir": "",
         "temp_dir_path": "",  # 为空时默认使用项目根目录下的 temp 文件夹
         "pinned_app": None,
+        "last_selected_app": None,
         "auto_launch_enabled": False,
         "hide_global_log": False,
         "default_device_pull_path": "/sdcard/temp/",
@@ -69,28 +70,13 @@ class ConfigManager:
         self.save_config()
 
     def get_apps(self):
-        apps = self.data.get("apps", [])
-        pinned = self.data.get("pinned_app")
-        
-        if not pinned:
-            return apps
-            
-        # 简单排序：置顶 App 排在第一位
-        sorted_apps = []
-        others = []
-        for app in apps:
-            if app["name"] == pinned:
-                sorted_apps.append(app)
-            else:
-                others.append(app)
-        
-        return sorted_apps + others
+        return self.data.get("apps", [])
 
-    def get_pinned_app(self):
-        return self.data.get("pinned_app")
+    def get_last_selected_app(self):
+        return self.data.get("last_selected_app")
 
-    def set_pinned_app(self, app_name):
-        self.data["pinned_app"] = app_name
+    def set_last_selected_app(self, app_name):
+        self.data["last_selected_app"] = app_name
         self.save_config()
 
     def get_auto_launch_enabled(self):
@@ -185,13 +171,5 @@ class ConfigManager:
             return False  # 未找到
             
         self.data["apps"] = apps
-        
-        # 安全校验：如果删除的是全局置顶 App，则重置为第一个或 None
-        if self.data.get("pinned_app") == name:
-            if len(apps) > 0:
-                self.data["pinned_app"] = apps[0]["name"]
-            else:
-                self.data["pinned_app"] = None
-                
         self.save_config()
         return True

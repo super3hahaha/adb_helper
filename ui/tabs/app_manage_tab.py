@@ -173,7 +173,7 @@ class AppManageTab(ctk.CTkFrame):
                 
         threading.Thread(target=_install_thread, daemon=True).start()
 
-    def refresh_app_list(self, force_select_pinned=False):
+    def refresh_app_list(self):
         """Refresh the app list from config."""
         apps = self.config_manager.get_apps()
         if not apps:
@@ -183,35 +183,27 @@ class AppManageTab(ctk.CTkFrame):
 
         app_labels = [app['name'] for app in apps]
         self.app_selector.configure(values=app_labels)
-        
-        # Restore selection or select first
-        current = self.app_selector.get()
-        pinned = self.config_manager.get_pinned_app()
-        
-        # 强制选中置顶 App，或者当前选中项不在列表中（可能被重命名或删除了），或者当前是默认提示文本
-        should_select_pinned = force_select_pinned or \
-                               current not in app_labels or \
-                               current == "请先在设置中添加 App"
 
-        if should_select_pinned and pinned and pinned in app_labels:
-            self.app_selector.set(pinned)
-            self.on_app_selected(pinned)
-        elif current not in app_labels:
-            # 默认选中第一个（ConfigManager 已排序，第一个就是置顶的）
-            self.app_selector.set(app_labels[0])
-            self.on_app_selected(app_labels[0])
+        current = self.app_selector.get()
+        last = self.config_manager.get_last_selected_app()
+        if current not in app_labels:
+            if last and last in app_labels:
+                self.app_selector.set(last)
+                self.on_app_selected(last)
+            else:
+                self.app_selector.set(app_labels[0])
+                self.on_app_selected(app_labels[0])
         else:
             # 保持当前选中
             self.on_app_selected(current)
 
     def on_app_selected(self, choice):
-        # Extract pkg
         apps = self.config_manager.get_apps()
         for app in apps:
             if app['name'] == choice:
                 self.current_app_pkg = app['pkg']
                 self.lbl_app_info.configure(text=f"当前包名: {app['pkg']}")
-                # Refresh matching APK list
+                self.config_manager.set_last_selected_app(choice)
                 self.refresh_apk_list()
                 return
         self.current_app_pkg = None
