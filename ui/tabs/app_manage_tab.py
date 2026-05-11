@@ -77,9 +77,9 @@ class AppManageTab(ctk.CTkFrame):
         
         ctk.CTkButton(frame_clear_wrapper, text="清除 App 数据", command=self.action_clear_data, fg_color="#e0a800", hover_color="#b08800", height=28, anchor="e").pack(side="left", expand=True, fill="x")
 
-        # 第二行：强制停止与启动App
-        ctk.CTkButton(frame_actions, text="启动 App (Launch)", command=self.action_launch_app, fg_color="#3B8ED0", hover_color="#36719F", height=28).grid(row=1, column=0, sticky="ew", padx=(2, 2), pady=2)
-        ctk.CTkButton(frame_actions, text="强制停止 (Force Stop)", command=self.action_force_stop, fg_color="#e0a800", hover_color="#b08800", height=28).grid(row=1, column=1, sticky="ew", padx=(2, 2), pady=2)
+        # 第二行：强制停止与清除Google Play数据
+        ctk.CTkButton(frame_actions, text="强制停止 (Force Stop)", command=self.action_force_stop, fg_color="#3B8ED0", hover_color="#36719F", height=28).grid(row=1, column=0, sticky="ew", padx=(2, 2), pady=2)
+        ctk.CTkButton(frame_actions, text="清除 Google Play 数据", command=self.action_clear_gplay_data, fg_color="#3B8ED0", hover_color="#36719F", height=28).grid(row=1, column=1, sticky="ew", padx=(2, 2), pady=2)
 
         # 第三行：截图与录屏
         self.btn_screenshot = ctk.CTkButton(frame_actions, text="截取屏幕", command=self.action_take_screenshot, height=28)
@@ -251,6 +251,14 @@ class AppManageTab(ctk.CTkFrame):
             self.adb_helper.clear_data(pkg, on_complete=lambda success=True: self._handle_auto_launch(pkg) if success else None)
         except Exception as e:
             self.log(f"清除数据异常: {e}", "ERROR")
+
+    def action_clear_gplay_data(self):
+        """清除 Google Play 商店数据"""
+        GPLAY_PKG = "com.android.vending"
+        try:
+            self.adb_helper.clear_data(GPLAY_PKG)
+        except Exception as e:
+            self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
 
     def action_force_stop(self):
         if not self.current_app_pkg:

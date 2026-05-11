@@ -140,10 +140,6 @@ class ToolsTab(ctk.CTkFrame):
 
         ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_sys, text="清除 Google Play 数据", height=sys_btn_h,
-                      command=self.action_clear_google_play,
-                      fg_color="#e0a800", hover_color="#b08800").pack(pady=1, padx=8, fill="x")
-
         ctk.CTkButton(frame_sys, text="查询设备系统版本", height=sys_btn_h,
                       command=self.action_query_device_info).pack(pady=1, padx=8, fill="x")
 
