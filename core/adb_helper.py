@@ -363,6 +363,10 @@ class ADBHelper:
             success, msg = self.execute_adb_command(cmd)
             if success:
                 success_count += 1
+                # push 成功后触发媒体扫描，让文件立即在相册/文件管理器中可见
+                scan_path = push_remote_path.replace("/sdcard/", "/storage/emulated/0/", 1)
+                shell_cmd = f"content call --uri content://media --method scan_file --arg '{scan_path}'"
+                self.execute_adb_command(["adb", "shell", shell_cmd])
             else:
                 errors.append(f"Push failed for {os.path.basename(local_path)}: {msg}")
 

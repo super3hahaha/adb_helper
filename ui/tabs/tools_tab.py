@@ -92,12 +92,15 @@ class ToolsTab(ctk.CTkFrame):
         ctk.CTkLabel(frame_push, text="文件传输 (Push 至设备)", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
         # 目标路径设置
+        self.DEFAULT_PUSH_PATH = "/sdcard/Download/"
         path_frame = ctk.CTkFrame(frame_push, fg_color="transparent")
         path_frame.pack(pady=1, padx=8, fill="x")
         ctk.CTkLabel(path_frame, text="目标路径:").pack(side="left", padx=(0, 5))
         self.entry_remote_path = ctk.CTkEntry(path_frame, height=sys_btn_h)
-        self.entry_remote_path.insert(0, "/sdcard/Download/")
+        saved_push_path = self.config_manager.get_default_device_push_path()
+        self.entry_remote_path.insert(0, saved_push_path)
         self.entry_remote_path.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(path_frame, text="↺", width=28, height=sys_btn_h, font=ctk.CTkFont(size=14), command=self._reset_push_path).pack(side="left", padx=(3, 0))
 
         # 拖拽感应区
         self.drop_zone = ctk.CTkFrame(frame_push, height=70, fg_color="#e0e0e0", border_width=2, border_color="#aaaaaa")
@@ -272,6 +275,11 @@ class ToolsTab(ctk.CTkFrame):
                 
         threading.Thread(target=_thread, daemon=True).start()
 
+    def _reset_push_path(self):
+        self.entry_remote_path.delete(0, "end")
+        self.entry_remote_path.insert(0, self.DEFAULT_PUSH_PATH)
+        self.config_manager.set_default_device_push_path(self.DEFAULT_PUSH_PATH)
+
     def on_files_dropped(self, event):
         """处理文件拖拽放下事件"""
         # TkinterDnD 会把多个路径用空格分隔，如果是带空格的路径会用 {} 包裹
@@ -290,7 +298,10 @@ class ToolsTab(ctk.CTkFrame):
         if not remote_path:
             self.log("目标路径不能为空", "WARNING")
             return
-            
+
+        if remote_path != self.config_manager.get_default_device_push_path():
+            self.config_manager.set_default_device_push_path(remote_path)
+
         # 开启后台线程执行 push 操作
         def _push_thread():
             try:

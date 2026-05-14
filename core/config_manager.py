@@ -11,6 +11,7 @@ class ConfigManager:
         "auto_launch_enabled": False,
         "hide_global_log": False,
         "default_device_pull_path": "/sdcard/temp/",
+        "default_device_push_path": "/sdcard/Download/",
         "apps": [],  # 格式: [{"name": "示例App", "pkg": "com.example.app", "keyword": "example"}]
         "hidden_apks": [],  # 隐藏的 APK 相对路径列表
         "filter_words": []  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
@@ -98,6 +99,13 @@ class ConfigManager:
 
     def set_default_device_pull_path(self, path):
         self.data["default_device_pull_path"] = path
+        self.save_config()
+
+    def get_default_device_push_path(self):
+        return self.data.get("default_device_push_path", "/sdcard/Download/")
+
+    def set_default_device_push_path(self, path):
+        self.data["default_device_push_path"] = path
         self.save_config()
 
     def get_hidden_apks(self):
