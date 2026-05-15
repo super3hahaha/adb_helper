@@ -65,14 +65,72 @@ class UpdateFlow:
             )
             return
 
+        self._show_update_dialog(info)
+
+    def _show_update_dialog(self, info):
         body = (info.get("body") or "").strip() or "（发布说明为空）"
-        msg = (
-            f"发现新版本：v{info['version']}（当前 v{APP_VERSION}）\n\n"
-            f"更新内容：\n{body}\n\n"
-            f"下载文件：{info['asset_name']}  {_fmt_size(info['asset_size'])}\n\n"
-            "是否立即下载并更新？"
-        )
-        if messagebox.askyesno("发现新版本", msg, parent=self.parent):
+
+        dlg = ctk.CTkToplevel(self.parent)
+        dlg.title("发现新版本")
+        dlg.resizable(False, False)
+        dlg.transient(self.parent)
+        dlg.grab_set()
+
+        pad = 20
+
+        ctk.CTkLabel(
+            dlg,
+            text=f"v{info['version']} 可用（当前 v{APP_VERSION}）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(padx=pad, pady=(pad, 4), anchor="w")
+
+        ctk.CTkLabel(
+            dlg,
+            text=f"下载文件：{info['asset_name']}  {_fmt_size(info['asset_size'])}",
+            text_color="gray",
+        ).pack(padx=pad, anchor="w")
+
+        ctk.CTkLabel(
+            dlg, text="更新内容：",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(padx=pad, pady=(12, 4), anchor="w")
+
+        textbox = ctk.CTkTextbox(dlg, width=440, height=220, activate_scrollbars=True)
+        textbox.pack(padx=pad, fill="both", expand=True)
+        textbox.insert("1.0", body)
+        textbox.configure(state="disabled")
+
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(padx=pad, pady=(12, pad), fill="x")
+
+        result = {"accepted": False}
+
+        def on_accept():
+            result["accepted"] = True
+            dlg.destroy()
+
+        def on_cancel():
+            dlg.destroy()
+
+        ctk.CTkButton(
+            btn_frame, text="立即更新", width=120,
+            fg_color="#2563EB", hover_color="#1D4ED8",
+            command=on_accept,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            btn_frame, text="暂不更新", width=100,
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            command=on_cancel,
+        ).pack(side="right")
+
+        dlg_w, dlg_h = 480, 400
+        self._center_on_parent(dlg, dlg_w, dlg_h)
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        dlg.wait_window()
+
+        if result["accepted"]:
             self._begin_download(info)
         else:
             self.log("用户取消了更新", "INFO")
