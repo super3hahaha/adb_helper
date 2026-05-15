@@ -773,6 +773,36 @@ class ADBHelper:
 
     # --- Screen Record ---
 
+    def enable_show_touches(self):
+        try:
+            put_success, _ = self.execute_adb_command(["adb", "shell", "settings", "put", "system", "show_touches", "1"])
+            get_success, output = self.execute_adb_command(["adb", "shell", "settings", "get", "system", "show_touches"])
+            already_on = get_success and output.strip() == "1"
+            if put_success and already_on:
+                self.log("已开启「显示点按操作反馈」", "SUCCESS")
+                return True
+            elif not put_success and already_on:
+                self.log("「显示点按操作反馈」已处于开启状态（无需ADB设置）", "INFO")
+                return True
+            else:
+                self.log("开启「显示点按操作反馈」失败", "WARNING")
+                self._log_show_touches_permission_hint()
+                return False
+        except Exception as e:
+            self.log(f"开启「显示点按操作反馈」失败: {e}", "WARNING")
+            self._log_show_touches_permission_hint()
+            return False
+
+
+    def _log_show_touches_permission_hint(self):
+        self.log(
+            "你的手机系统可能额外限制了 ADB 修改系统设置的权限，仅开启「USB 调试」是不够的。\n"
+            "  解决方法：\n"
+            "  1. 小米/HyperOS/MIUI：开发者选项 → 开启「USB 调试（安全设置）」（需登录小米账号，确认3次警告）\n"
+            "  2. OPPO/vivo/Realme：开发者选项 → 开启「禁止权限监控」或关闭「权限监控」",
+            "WARNING"
+        )
+
     def start_recording(self):
         try:
             self.check_device()
@@ -782,9 +812,11 @@ class ADBHelper:
 
         if self.recording_process:
             return False
-            
+
+        self.enable_show_touches()
+
         cmd = [self.adb_cmd, "-s", self.current_device_id, "shell", "screenrecord", "/sdcard/screen_record_tmp.mp4"]
-        
+
         try:
             kwargs = self._get_subprocess_kwargs(capture_output=False, text=False)
             kwargs['stdout'] = subprocess.PIPE
@@ -809,20 +841,20 @@ class ADBHelper:
                 if self.recording_process:
                     self.recording_process.terminate()
                     self.recording_process = None
-                
+
                 time.sleep(2)
-                
+
                 remote_path = "/sdcard/screen_record_tmp.mp4"
                 device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
                 local_filename = f"screenrecord_{int(time.time())}{device_suffix}.mp4"
                 local_path = os.path.join(temp_dir, local_filename)
-                
+
                 self.execute_adb_command(["adb", "pull", remote_path, local_path])
                 self.execute_adb_command(["adb", "shell", "rm", remote_path])
-                
+
                 if on_complete:
                     on_complete(local_path)
-                    
+
             except Exception as e:
                 self.log(f"停止录制失败: {e}", "ERROR")
                 if on_complete: on_complete(None)
