@@ -83,15 +83,19 @@ class MainWindow(TkinterDnD_CTk):
 
     def bind_mac_shortcuts(self):
         """修复 Mac 系统的 Command 键复制粘贴等快捷键"""
+        native_widgets = (tk.Entry, tk.Text, tk.Spinbox)
+
         def _on_mac_shortcut(event, action):
             widget = self.focus_get()
             if widget:
+                if isinstance(widget, native_widgets):
+                    return
                 try:
                     widget.event_generate(f"<<{action}>>")
                 except tk.TclError:
                     pass
             return "break"
-            
+
         self.bind_all("<Command-c>", lambda e: _on_mac_shortcut(e, "Copy"))
         self.bind_all("<Command-v>", lambda e: _on_mac_shortcut(e, "Paste"))
         self.bind_all("<Command-x>", lambda e: _on_mac_shortcut(e, "Cut"))
@@ -335,13 +339,25 @@ class MainWindow(TkinterDnD_CTk):
 
     def on_closing(self):
         """窗口关闭时清理资源"""
-        # 清理 ADB 相关的后台进程
+        # 关闭子窗口（各自会终止自己的子进程）
+        if hasattr(self, 'tab_app'):
+            for attr in ('logcat_window', 'firebase_window'):
+                win = getattr(self.tab_app, attr, None)
+                if win and win.winfo_exists():
+                    win.on_close()
+
+        # 终止 adb_helper 管理的子进程
         if hasattr(self, 'adb_helper'):
-            # 停止可能正在进行的录屏
-            # 注意：ADBHelper 内部应该有 cleanup 方法，或者我们需要手动调用
-            # 检查 ADBHelper 是否有 cleanup
-            pass
-            
+            self.adb_helper.stop_logcat()
+            self.adb_helper.stop_firebase_logcat()
+            if self.adb_helper.recording_process:
+                try:
+                    self.adb_helper.recording_process.terminate()
+                    self.adb_helper.recording_process.wait(timeout=2)
+                except Exception:
+                    pass
+                self.adb_helper.recording_process = None
+
         # 清理临时目录
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             try:
