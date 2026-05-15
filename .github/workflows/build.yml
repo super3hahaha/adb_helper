@@ -63,10 +63,19 @@ jobs:
           cd dist
           zip -r ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
 
+      - name: Get tag annotation
+        id: tag_msg
+        run: |
+          MSG=$(git tag -l --format='%(contents)' "${{ github.ref_name }}")
+          echo "body<<TAGEOF" >> "$GITHUB_OUTPUT"
+          echo "$MSG" >> "$GITHUB_OUTPUT"
+          echo "TAGEOF" >> "$GITHUB_OUTPUT"
+
       - name: Upload Release Asset (Windows)
         if: matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v2
         with:
+          body: ${{ steps.tag_msg.outputs.body }}
           files: dist/ADBHelper-${{ github.ref_name }}.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -75,6 +84,7 @@ jobs:
         if: matrix.os == 'macos-latest'
         uses: softprops/action-gh-release@v2
         with:
+          body: ${{ steps.tag_msg.outputs.body }}
           files: dist/ADBHelper-macOS-${{ github.ref_name }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
