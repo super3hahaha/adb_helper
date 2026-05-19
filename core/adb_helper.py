@@ -238,8 +238,8 @@ class ADBHelper:
         """通过 adb shell input text 模拟按键输入（仅支持 ASCII）"""
         if not text:
             return False, "Empty text"
-        text_escaped = text.replace(" ", "%s")
-        return self.execute_adb_command(["adb", "shell", "input", "text", text_escaped])
+        safe_text = text.replace("'", "'\\''")
+        return self.execute_adb_command(["adb", "shell", "input", "text", f"'{safe_text}'"])
 
     def sim_low_battery(self):
         def _seq():
