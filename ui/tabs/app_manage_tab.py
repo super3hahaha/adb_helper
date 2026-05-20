@@ -23,12 +23,19 @@ class AppManageTab(ctk.CTkFrame):
         # State
         self.is_recording = False
         self.current_app_pkg = None
+        # 扫描令牌:每次 refresh_apk_list 自增,只让最新扫描的 _update_ui 生效,
+        # 防止启动时 refresh_app_list → refresh_apk_list 与 __init__ 显式调用
+        # 产生的两个并发扫描线程互相覆盖结果。
+        self._apk_scan_token = 0
 
         self.setup_ui()
-        
-        # Initial data load
-        self.refresh_app_list()
-        self.refresh_apk_list()
+
+        # 推迟到 mainloop 启动后再做首次扫描:
+        # 1. 此处仍在 MainWindow.__init__ 的同步构造阶段,widget 还没 grid(),
+        #    在"半构造"状态起线程做 os.walk 偶发会出现扫描完成但 UI 未更新到位的情况。
+        # 2. refresh_app_list 在有 App 时会通过 on_app_selected 触发 refresh_apk_list,
+        #    不在这里额外显式调用,避免两个扫描线程并发竞争。
+        self.after(0, self.refresh_app_list)
 
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -185,6 +192,8 @@ class AppManageTab(ctk.CTkFrame):
         if not apps:
             self.app_selector.set("请先在设置中添加 App")
             self.app_selector.configure(values=[])
+            # 没有 App 时也扫描一次,展示目录下全部 APK
+            self.refresh_apk_list()
             return
 
         app_labels = [app['name'] for app in apps]
@@ -418,6 +427,9 @@ class AppManageTab(ctk.CTkFrame):
         # 禁用按钮，显示扫描状态
         self.btn_refresh_apk.configure(state="disabled", text="扫描中...")
 
+        self._apk_scan_token += 1
+        my_token = self._apk_scan_token
+
         keyword = ""
         apps = self.config_manager.get_apps()
         for app in apps:
@@ -453,6 +465,9 @@ class AppManageTab(ctk.CTkFrame):
 
             # 回主线程更新 UI
             def _update_ui():
+                # 已被更新的扫描取代,丢弃本次结果,避免覆盖最新数据
+                if my_token != self._apk_scan_token:
+                    return
                 self.btn_refresh_apk.configure(state="normal", text="刷新")
                 # 过滤掉隐藏的 APK
                 hidden_apks = set(self.config_manager.get_hidden_apks())
