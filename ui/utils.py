@@ -21,24 +21,15 @@ def _install_scrollable_optimizations(sf, delay_ms=80):
     scrollbar = sf._scrollbar
     pending = {"region": None, "fit": None}
 
-    def _apply_scrollbar_visibility():
-        try:
-            bbox = canvas.bbox("all")
-            if bbox is None:
-                return
-            content_h = bbox[3] - bbox[1]
-            if content_h <= canvas.winfo_height() + 1:
-                scrollbar.grid_remove()
-            else:
-                scrollbar.grid()
-        except Exception:
-            pass
+    # 永久隐藏滚动条,避免内容是否溢出导致 canvas 宽度变化带来的微小布局抖动。
+    # 鼠标滚轮仍可滚动:CTkScrollableFrame 在 __init__ 里通过 bind_all("<MouseWheel>")
+    # 监听滚轮事件,与滚动条是否可见无关。
+    scrollbar.grid_remove()
 
     def _do_update_region():
         pending["region"] = None
         try:
             canvas.configure(scrollregion=canvas.bbox("all"))
-            _apply_scrollbar_visibility()
         except Exception:
             pass
 
@@ -54,8 +45,6 @@ def _install_scrollable_optimizations(sf, delay_ms=80):
         pending["fit"] = None
         try:
             original_fit(event)
-            # canvas 尺寸变了(典型场景:窗口高度被拖小)也要重新判断滚动条
-            _apply_scrollbar_visibility()
         except Exception:
             pass
 
