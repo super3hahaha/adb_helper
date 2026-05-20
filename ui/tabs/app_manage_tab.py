@@ -9,7 +9,7 @@ import glob
 from tkinterdnd2 import DND_FILES
 from ui.components.tooltip import ModernTooltip
 
-from ui.utils import optimize_combobox_width
+from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.windows.screenshot_preview import ScreenshotPreviewWindow
 from ui.components.logcat_window import LogcatWindow
 
@@ -32,11 +32,17 @@ class AppManageTab(ctk.CTkFrame):
 
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # 滚动容器：窗口高度不足以容纳所有内容时自动显示滚动条
+        self.scroll_container = attach_scrollable(self)
+        self.scroll_container.grid(row=0, column=0, sticky="nsew")
+        container = self.scroll_container
 
         # 1. App 选择器
-        frame_app_select = ctk.CTkFrame(self, fg_color="transparent")
+        frame_app_select = ctk.CTkFrame(container, fg_color="transparent")
         frame_app_select.pack(pady=(5, 0), padx=5, fill="x")
-        
+
         ctk.CTkLabel(frame_app_select, text="选择目标 App:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(5, 5))
         self.app_selector = ctk.CTkComboBox(frame_app_select, command=self.on_app_selected, height=28)
         self.app_selector.pack(side="left", fill="x", expand=True, padx=5)
@@ -44,11 +50,11 @@ class AppManageTab(ctk.CTkFrame):
         self.app_selector.set("请先在设置中添加 App")
 
         # App 信息显示 (包名)
-        self.lbl_app_info = ctk.CTkLabel(self, text="当前包名: -", text_color="gray", height=20, font=ctk.CTkFont(size=11))
+        self.lbl_app_info = ctk.CTkLabel(container, text="当前包名: -", text_color="gray", height=20, font=ctk.CTkFont(size=11))
         self.lbl_app_info.pack(pady=(0, 5), anchor="w", padx=10, fill="x")
 
         # 2. 中间操作按钮 (合并为两行)
-        frame_actions = ctk.CTkFrame(self)
+        frame_actions = ctk.CTkFrame(container)
         frame_actions.pack(pady=5, padx=5, fill="x")
         
         frame_actions.grid_columnconfigure(0, weight=1, uniform="btn_cols")
@@ -91,7 +97,7 @@ class AppManageTab(ctk.CTkFrame):
         ctk.CTkButton(frame_actions, text="查看 Logcat (实时监控)", command=self.action_view_logcat, height=28, fg_color="#3B8ED0", hover_color="#36719F").grid(row=3, column=0, columnspan=2, sticky="ew", padx=(2, 2), pady=2)
 
         # 3. 智能安装区域 (紧凑版)
-        frame_install = ctk.CTkFrame(self)
+        frame_install = ctk.CTkFrame(container)
         frame_install.pack(pady=5, padx=5, fill="x")
 
         ctk.CTkLabel(frame_install, text="智能安装 (Smart Install)", font=ctk.CTkFont(weight="bold"), height=20).pack(pady=(5, 2), anchor="w", padx=5)
@@ -113,7 +119,7 @@ class AppManageTab(ctk.CTkFrame):
         ctk.CTkButton(frame_install, text="安装选中的 APK", command=self.action_install_apk, height=28).pack(pady=(5, 5), padx=5, fill="x")
 
         # 3.5 手动拖拽安装区域 (高度减小)
-        self.frame_drag_install = ctk.CTkFrame(self, height=60, fg_color=("gray85", "gray25"))
+        self.frame_drag_install = ctk.CTkFrame(container, height=60, fg_color=("gray85", "gray25"))
         self.frame_drag_install.pack(pady=5, padx=5, fill="x")
         self.frame_drag_install.pack_propagate(False) 
         
@@ -125,7 +131,7 @@ class AppManageTab(ctk.CTkFrame):
         self.frame_drag_install.dnd_bind('<<Drop>>', self.on_apk_drop)
 
         # 4. Firebase 本地调试区域
-        frame_firebase = ctk.CTkFrame(self)
+        frame_firebase = ctk.CTkFrame(container)
         frame_firebase.pack(pady=5, padx=5, fill="x")
 
         ctk.CTkLabel(frame_firebase, text="Firebase 调试", font=ctk.CTkFont(weight="bold"), height=20).pack(pady=(5, 2), anchor="w", padx=5)

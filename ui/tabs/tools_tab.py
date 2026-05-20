@@ -2,7 +2,7 @@ import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import threading
 import subprocess
-from ui.utils import optimize_combobox_width
+from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.components.tooltip import ModernTooltip
 
 class ToolsTab(ctk.CTkFrame):
@@ -17,11 +17,17 @@ class ToolsTab(ctk.CTkFrame):
 
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # 滚动容器：窗口高度不足以容纳所有内容时自动显示滚动条
+        self.scroll_container = attach_scrollable(self)
+        self.scroll_container.grid(row=0, column=0, sticky="nsew")
+        container = self.scroll_container
 
         # 0. 下拉选择框
         self.category_var = ctk.StringVar(value="设备与系统控制")
         self.category_selector = ctk.CTkOptionMenu(
-            self,
+            container,
             values=["设备与系统控制", "环境与状态模拟"],
             command=self.on_category_change,
             variable=self.category_var,
@@ -29,13 +35,13 @@ class ToolsTab(ctk.CTkFrame):
             height=32
         )
         self.category_selector.pack(pady=(10, 16), padx=10, fill="x")
-        
+
         # 优化下拉框宽度
         optimize_combobox_width(self.category_selector, offset=200)
 
         # 创建两个容器用于切换显示
-        self.container_system = ctk.CTkFrame(self, fg_color="transparent")
-        self.container_simulation = ctk.CTkFrame(self, fg_color="transparent")
+        self.container_system = ctk.CTkFrame(container, fg_color="transparent")
+        self.container_simulation = ctk.CTkFrame(container, fg_color="transparent")
 
         # 初始化各部分 UI
         self._init_system_ui()

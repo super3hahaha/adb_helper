@@ -1,5 +1,73 @@
 import tkinter.font
 import tkinter
+import customtkinter as ctk
+
+
+def attach_scrollable(parent, **kwargs):
+    """创建带防抖与自动隐藏滚动条的 CTkScrollableFrame。
+
+    Why: customtkinter 的 ScrollableFrame 默认每个 <Configure> 事件都会重算
+         scrollregion 并且永远显示滚动条;窗口里嵌套大量带圆角的 CTkFrame 时,
+         resize 会非常卡。此函数对两个内部 Configure 处理器加 80ms 防抖,
+         同时按内容是否超出可视区自动 grid/grid_remove 滚动条。
+    """
+    sf = ctk.CTkScrollableFrame(parent, fg_color="transparent", corner_radius=0, **kwargs)
+    _install_scrollable_optimizations(sf)
+    return sf
+
+
+def _install_scrollable_optimizations(sf, delay_ms=80):
+    canvas = sf._parent_canvas
+    scrollbar = sf._scrollbar
+    pending = {"region": None, "fit": None}
+
+    def _apply_scrollbar_visibility():
+        try:
+            bbox = canvas.bbox("all")
+            if bbox is None:
+                return
+            content_h = bbox[3] - bbox[1]
+            if content_h <= canvas.winfo_height() + 1:
+                scrollbar.grid_remove()
+            else:
+                scrollbar.grid()
+        except Exception:
+            pass
+
+    def _do_update_region():
+        pending["region"] = None
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            _apply_scrollbar_visibility()
+        except Exception:
+            pass
+
+    def _on_inner_configure(_event):
+        if pending["region"] is not None:
+            try: sf.after_cancel(pending["region"])
+            except Exception: pass
+        pending["region"] = sf.after(delay_ms, _do_update_region)
+
+    original_fit = sf._fit_frame_dimensions_to_canvas
+
+    def _do_fit(event):
+        pending["fit"] = None
+        try:
+            original_fit(event)
+            # canvas 尺寸变了(典型场景:窗口高度被拖小)也要重新判断滚动条
+            _apply_scrollbar_visibility()
+        except Exception:
+            pass
+
+    def _on_canvas_configure(event):
+        if pending["fit"] is not None:
+            try: sf.after_cancel(pending["fit"])
+            except Exception: pass
+        pending["fit"] = sf.after(delay_ms, lambda e=event: _do_fit(e))
+
+    sf.bind("<Configure>", _on_inner_configure)
+    canvas.bind("<Configure>", _on_canvas_configure)
+
 
 def optimize_combobox_width(combo, offset=120):
     """优化下拉框宽度，使其下拉列表与控件宽度一致"""

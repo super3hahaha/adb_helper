@@ -3,7 +3,7 @@ import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import tkinter.filedialog as filedialog
 
-from ui.utils import optimize_combobox_width
+from ui.utils import optimize_combobox_width, attach_scrollable
 from core.file_helper import FileHelper
 
 class SettingsTab(ctk.CTkFrame):
@@ -19,9 +19,15 @@ class SettingsTab(ctk.CTkFrame):
 
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # 滚动容器：窗口高度不足以容纳所有内容时自动显示滚动条
+        self.scroll_container = attach_scrollable(self)
+        self.scroll_container.grid(row=0, column=0, sticky="nsew")
+        container = self.scroll_container
 
         # 1. 全局路径设置
-        frame_path = ctk.CTkFrame(self)
+        frame_path = ctk.CTkFrame(container)
         frame_path.pack(pady=2, padx=10, fill="x")
 
         ctk.CTkLabel(frame_path, text="APK 默认目录:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
@@ -48,7 +54,7 @@ class SettingsTab(ctk.CTkFrame):
         ctk.CTkButton(frame_temp_btns, text="打开目录", command=self.action_open_temp, width=100, height=26).pack(side="right")
 
         # 2. 自动化行为设置
-        frame_automation = ctk.CTkFrame(self)
+        frame_automation = ctk.CTkFrame(container)
         frame_automation.pack(pady=2, padx=10, fill="x")
 
         ctk.CTkLabel(frame_automation, text="个性化设置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
@@ -79,7 +85,7 @@ class SettingsTab(ctk.CTkFrame):
             self.check_hide_global_log.deselect()
 
         # 4. App 录入管理
-        frame_add = ctk.CTkFrame(self)
+        frame_add = ctk.CTkFrame(container)
         frame_add.pack(pady=2, padx=10, fill="x")
 
         ctk.CTkLabel(frame_add, text="新增/修改 App 配置:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
@@ -106,7 +112,7 @@ class SettingsTab(ctk.CTkFrame):
         self.refresh_app_name_combo()
 
         # 5. Logcat 自定义过滤词管理
-        frame_filter = ctk.CTkFrame(self)
+        frame_filter = ctk.CTkFrame(container)
         frame_filter.pack(pady=2, padx=10, fill="x")
 
         ctk.CTkLabel(frame_filter, text="Logcat 自定义过滤词:", font=ctk.CTkFont(weight="bold")).pack(pady=(3, 1), anchor="w", padx=10)
