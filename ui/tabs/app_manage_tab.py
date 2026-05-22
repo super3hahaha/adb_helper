@@ -362,6 +362,20 @@ class AppManageTab(ctk.CTkFrame):
                         def on_save():
                             self.log(f"视频已保存至: {local_path}", "SUCCESS")
                             dialog.destroy()
+                            try:
+                                target_dir = os.path.dirname(os.path.abspath(local_path))
+                                from core.platform_utils import PlatformUtils
+                                os_type = PlatformUtils.get_os_type()
+                                if os_type == "win":
+                                    os.startfile(target_dir)
+                                elif os_type == "mac":
+                                    import subprocess
+                                    subprocess.run(['open', target_dir])
+                                else:
+                                    import subprocess
+                                    subprocess.run(['xdg-open', target_dir])
+                            except Exception as e:
+                                self.log(f"打开目录失败: {e}", "ERROR")
                             
                         def on_cancel():
                             try:
