@@ -149,8 +149,15 @@ class ToolsTab(ctk.CTkFrame):
 
         ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_sys, text="查询设备系统版本", height=sys_btn_h,
-                      command=self.action_query_device_info).pack(pady=1, padx=8, fill="x")
+        frame_sys_query_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
+        frame_sys_query_btns.pack(pady=1, padx=8, fill="x")
+        frame_sys_query_btns.grid_columnconfigure(0, weight=1, uniform="sys_query")
+        frame_sys_query_btns.grid_columnconfigure(1, weight=1, uniform="sys_query")
+        ctk.CTkButton(frame_sys_query_btns, text="查询设备系统版本", height=sys_btn_h,
+                      command=self.action_query_device_info).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self.btn_screen_info = ctk.CTkButton(frame_sys_query_btns, text="屏幕信息", height=sys_btn_h,
+                                              command=self.action_show_screen_info)
+        self.btn_screen_info.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         frame_nav_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
         frame_nav_btns.pack(pady=(1, 4), padx=8, fill="x")
@@ -635,6 +642,36 @@ class ToolsTab(ctk.CTkFrame):
                 self.log(f"查询成功 -> {info}", "SUCCESS")
             except Exception as e:
                 self.log(f"查询设备信息失败: {e}", "ERROR")
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_show_screen_info(self):
+        """查询设备屏幕信息（分辨率/密度/状态栏/导航栏/刘海/Configuration），弹窗展示。"""
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+
+        self.btn_screen_info.configure(state="disabled", text="查询中...")
+
+        def _thread():
+            err = None
+            info = None
+            try:
+                info = self.adb_helper.get_screen_info()
+            except Exception as e:
+                err = str(e)
+
+            def _on_done():
+                self.btn_screen_info.configure(state="normal", text="屏幕信息")
+                if err:
+                    self.log(f"查询屏幕信息失败: {err}", "ERROR")
+                    messagebox.showerror("失败", f"查询屏幕信息失败:\n{err}", parent=self)
+                    return
+                from ui.components.screen_info_dialog import ScreenInfoDialog
+                ScreenInfoDialog(self, info, log_func=self.log)
+                self.log("已查询屏幕信息", "SUCCESS")
+
+            self.after(0, _on_done)
 
         threading.Thread(target=_thread, daemon=True).start()
 

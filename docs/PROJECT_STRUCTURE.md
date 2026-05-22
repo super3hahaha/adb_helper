@@ -10,6 +10,7 @@ adb_helper/
 │   ├── adb_helper.py        # ADB 命令封装与设备管理
 │   ├── config.py            # 应用级常量：APP_VERSION / APP_NAME / GITHUB_REPO
 │   ├── config_manager.py    # 配置读写与持久化
+│   ├── screen_info_cache.py # 屏幕信息缓存（per-device + per-rotation，落盘到 appdata）
 │   ├── file_helper.py       # 文件与临时目录操作
 │   ├── platform_utils.py    # 跨平台适配工具
 │   └── updater.py           # GitHub Releases 版本检查、下载、Windows 自动替换脚本
@@ -26,7 +27,8 @@ adb_helper/
 │   │   ├── logcat_window.py     # Logcat 实时日志窗口（含自定义过滤词快捷标签）
 │   │   ├── file_manager_window.py  # 设备文件管理器
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
-│   │   └── contact_selector.py  # 联系人选择对话框
+│   │   ├── contact_selector.py  # 联系人选择对话框
+│   │   └── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
 │   └── windows/             # 独立功能窗口
 │       ├── update_window.py        # 检查更新 / 下载进度 / 触发自动替换
 │       └── screenshot_preview/     # 截图预览与标注（Mixin 拆分）

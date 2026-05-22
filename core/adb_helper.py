@@ -156,6 +156,247 @@ class ADBHelper:
 
         return f"设备型号: {results['model']}, 系统版本: Android {results['release']} (API {results['sdk']})"
 
+    def _get_orientation_key(self):
+        """获取一个稳定反映"当前 Configuration"的字符串，用作 screen_info 缓存键。
+
+        踩坑历史（按时间）：
+        1. `settings get user_rotation` —— 只反映用户偏好，auto-rotate 物理转屏不变
+        2. `dumpsys window | grep -m1 mRotation` —— dumpsys 里 mRotation 多份，grep -m1 容易拿错
+        3. `dumpsys window | grep -m1 sw...dp w...dp h...dp` —— 第一个 Configuration 不一定是
+           当前全局的（可能是某个 task/window 的快照），切回竖屏还命中横屏数据
+
+        现在用 `am get-config` —— Android 标准命令，输出当前 Configuration 串，
+        转屏后立即更新，输出 < 200 字节、~50ms。串里 "w###dp-h###dp" 直接拿来作 key。
+        """
+        out = self._shell_silent(["shell", "am", "get-config"])
+        if out:
+            # 形如 "config: zh-rCN-ldltr-sw533dp-w889dp-h533dp-...-land-..."
+            m = re.search(r"w(\d+)dp-h(\d+)dp", out)
+            if m:
+                return f"w{m.group(1)}h{m.group(2)}"
+        return None
+
+    def _shell_silent(self, args):
+        """直接执行 adb -s <id> <args>，不打印结果到 log。
+        专用于 dumpsys 这类大输出查询，避免污染全局日志面板。
+        """
+        if not self.current_device_id:
+            return ""
+        cmd = [self.adb_cmd, "-s", self.current_device_id] + list(args)
+        try:
+            result = subprocess.run(cmd, **self._get_subprocess_kwargs())
+            return (result.stdout or "").strip()
+        except Exception as e:
+            self.log(f"静默 ADB 查询失败: {e}", "ERROR")
+            return ""
+
+    def get_screen_info(self, force_refresh=False):
+        """查询设备屏幕信息（型号/分辨率/密度/状态栏/导航栏/刘海/Configuration 等），返回 dict。
+
+        说明：
+        - wm size / wm density 取真实分辨率与 DPI；存在 Override 时优先取 Override。
+        - dumpsys window 解析 stable insets（顶部=状态栏，底部=导航/手势条，左右=侧边手势区）。
+        - DisplayCutout 解析刘海/挖孔的 safeInsets，全 0 视为无。
+        - sw###dp w###dp h###dp 解析当前 Configuration 的逻辑宽高。
+        - dp = px * 160 / density（四舍五入）。
+
+        缓存：按 (device_id, Configuration_w_h) 双键缓存到 appdata 下的 screen_info_cache.json。
+        Configuration 串转屏会立即更新，所以横竖屏切换会自动命中不同缓存槽，不会回放陈旧数据。
+        force_refresh=True 强制旁路缓存。
+        """
+        self.check_device()
+
+        from core import screen_info_cache
+
+        # 拿一个反映"当前方向+分辨率+密度"的稳定字符串作缓存键，转屏后会立即变化
+        cache_key = self._get_orientation_key()
+
+        if not force_refresh and cache_key is not None:
+            cached = screen_info_cache.get(self.current_device_id, cache_key)
+            if cached:
+                return cached
+
+        info = {
+            "model": "未知",
+            "android": "?",
+            "api": "?",
+            "px_w": 0,
+            "px_h": 0,
+            "dp_w": 0,
+            "dp_h": 0,
+            "density": 160,
+            "orientation": "未知",
+            "status_bar": "未知",
+            "cutout": "无",
+            "nav_bar": "未知",
+            "side_gesture": "无",
+            "avail_w": "未知",
+            "avail_h": "未知",
+            "config_w": "未知",
+            "config_h": "未知",
+        }
+
+        # ===== 设备信息 =====
+        manuf = self._shell_silent(["shell", "getprop", "ro.product.manufacturer"]).strip()
+        model = self._shell_silent(["shell", "getprop", "ro.product.model"]).strip()
+        if manuf and model:
+            # 避免重复，比如 model 已经带 "samsung"
+            if manuf.lower() in model.lower():
+                info["model"] = model
+            else:
+                info["model"] = f"{manuf} {model}"
+        else:
+            info["model"] = model or manuf or "未知"
+
+        info["android"] = self._shell_silent(["shell", "getprop", "ro.build.version.release"]).strip() or "?"
+        info["api"] = self._shell_silent(["shell", "getprop", "ro.build.version.sdk"]).strip() or "?"
+
+        # ===== 屏幕尺寸 =====
+        size_out = self._shell_silent(["shell", "wm", "size"])
+        m_over = re.search(r"Override size:\s*(\d+)x(\d+)", size_out)
+        m_phys = re.search(r"Physical size:\s*(\d+)x(\d+)", size_out)
+        if m_over:
+            info["px_w"], info["px_h"] = int(m_over.group(1)), int(m_over.group(2))
+        elif m_phys:
+            info["px_w"], info["px_h"] = int(m_phys.group(1)), int(m_phys.group(2))
+
+        dens_out = self._shell_silent(["shell", "wm", "density"])
+        m_od = re.search(r"Override density:\s*(\d+)", dens_out)
+        m_pd = re.search(r"Physical density:\s*(\d+)", dens_out)
+        if m_od:
+            info["density"] = int(m_od.group(1))
+        elif m_pd:
+            info["density"] = int(m_pd.group(1))
+
+        scale = 160.0 / info["density"] if info["density"] else 1.0
+        if info["px_w"]:
+            info["dp_w"] = round(info["px_w"] * scale)
+        if info["px_h"]:
+            info["dp_h"] = round(info["px_h"] * scale)
+
+        # 方向先按 wm size 的宽高比兜底；下面 Configuration w/h 解析后会覆盖为权威值
+        if info["px_w"] and info["px_h"]:
+            info["orientation"] = "竖屏" if info["px_h"] >= info["px_w"] else "横屏"
+
+        # ===== dumpsys window 解析 insets / cutout / configuration =====
+        dw = self._shell_silent(["shell", "dumpsys", "window"])
+
+        # --- 系统占用：先尝试 Android 11+ 的 InsetsSource 格式 ---
+        # 例：InsetsSource type=ITYPE_STATUS_BAR frame=[0,0][1200,54]
+        # frame=[L,T][R,B] 即该 inset 条带在屏幕上的矩形位置：
+        #   状态栏（顶部条）高度 = B - T
+        #   导航栏（底部条）高度 = B - T
+        #   左/右手势区（侧边条）宽度 = R - L
+        def _frame_of(type_name):
+            m = re.search(
+                rf"InsetsSource type={type_name}\s+frame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                dw,
+            )
+            if not m:
+                return None
+            fl, ft, fr, fb = map(int, m.groups())
+            return {"l": fl, "t": ft, "r": fr, "b": fb,
+                    "w": fr - fl, "h": fb - ft}
+
+        sb = _frame_of("ITYPE_STATUS_BAR")
+        nb = _frame_of("ITYPE_NAVIGATION_BAR")
+        lg = _frame_of("ITYPE_LEFT_GESTURES")
+        rg = _frame_of("ITYPE_RIGHT_GESTURES")
+
+        if sb is not None:
+            info["status_bar"] = f"{round(sb['h'] * scale)} dp"
+        if nb is not None:
+            info["nav_bar"] = f"{round(nb['h'] * scale)} dp"
+        if lg is not None or rg is not None:
+            lw = lg["w"] if lg else 0
+            rw = rg["w"] if rg else 0
+            if lw > 0 or rw > 0:
+                info["side_gesture"] = f"L {round(lw*scale)} dp / R {round(rw*scale)} dp"
+            else:
+                info["side_gesture"] = "无"
+
+        # --- 回退：旧格式（Android 10 及更早） ---
+        if info["status_bar"] == "未知" and info["nav_bar"] == "未知":
+            l = t = r = b = None
+            m_in1 = re.search(
+                r"mStableInsets=Insets\{left=(\d+),\s*top=(\d+),\s*right=(\d+),\s*bottom=(\d+)\}",
+                dw,
+            )
+            m_in2 = re.search(r"stableInsets=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", dw)
+            if m_in1:
+                l, t, r, b = map(int, m_in1.groups())
+            elif m_in2:
+                l, t, r, b = map(int, m_in2.groups())
+
+            if l is not None:
+                info["status_bar"] = f"{round(t * scale)} dp"
+                info["nav_bar"] = f"{round(b * scale)} dp"
+                if l > 0 or r > 0:
+                    info["side_gesture"] = f"L {round(l*scale)} dp / R {round(r*scale)} dp"
+                else:
+                    info["side_gesture"] = "无"
+
+        # --- Cutout：DisplayCutout{... insets=Rect(L, T - R, B) ... 或 safeInsets=...} ---
+        m_cut = re.search(r"DisplayCutout\{([^}]*)\}", dw)
+        if m_cut:
+            body = m_cut.group(1)
+            m_safe = re.search(
+                r"(?:safeInsets|insets)=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)",
+                body,
+            )
+            if m_safe:
+                cl, ct, cr, cb = map(int, m_safe.groups())
+                if cl == 0 and ct == 0 and cr == 0 and cb == 0:
+                    info["cutout"] = "无"
+                else:
+                    parts = []
+                    if ct > 0:
+                        parts.append(f"上 {round(ct*scale)} dp")
+                    if cb > 0:
+                        parts.append(f"下 {round(cb*scale)} dp")
+                    if cl > 0:
+                        parts.append(f"左 {round(cl*scale)} dp")
+                    if cr > 0:
+                        parts.append(f"右 {round(cr*scale)} dp")
+                    info["cutout"] = " / ".join(parts) if parts else "无"
+
+        # Configuration 宽高（取 dp）
+        m_conf = re.search(r"sw\d+dp\s+w(\d+)dp\s+h(\d+)dp", dw)
+        if m_conf:
+            cw_dp = int(m_conf.group(1))
+            ch_dp = int(m_conf.group(2))
+            info["config_w"] = f"{cw_dp} dp"
+            info["config_h"] = f"{ch_dp} dp"
+            # Configuration w/h 是 Android 报给 App 的当前方向尺寸（横屏 w>h），
+            # 比 _get_actual_rotation 更权威，作为方向判定的最终兜底
+            info["orientation"] = "横屏" if cw_dp > ch_dp else "竖屏"
+
+        # wm size 返回的是自然方向 px，横屏时需要把宽高互换成当前方向显示。
+        # 判定依据：方向已是"横屏"但 dp_h > dp_w（说明 wm size 还是竖屏数）。
+        # 插值 insets 已经是当前方向的，无需调整。
+        if (info["orientation"] == "横屏"
+                and info["dp_w"] and info["dp_h"]
+                and info["dp_h"] > info["dp_w"]):
+            info["dp_w"], info["dp_h"] = info["dp_h"], info["dp_w"]
+            info["px_w"], info["px_h"] = info["px_h"], info["px_w"]
+
+        # 可用区域 = 当前方向 dp - 状态栏 - 导航栏（侧边手势区是虚拟检测区，不占可视宽度）
+        try:
+            sb_dp = int(info["status_bar"].split()[0]) if info["status_bar"].endswith("dp") else 0
+            nb_dp = int(info["nav_bar"].split()[0]) if info["nav_bar"].endswith("dp") else 0
+            if info["dp_w"]:
+                info["avail_w"] = f"{info['dp_w']} dp"
+            if info["dp_h"]:
+                info["avail_h"] = f"{info['dp_h'] - sb_dp - nb_dp} dp"
+        except (ValueError, AttributeError):
+            pass
+
+        # 写入缓存（按设备 + Configuration 串）。key 取不到时不写，避免污染
+        if cache_key is not None:
+            screen_info_cache.put(self.current_device_id, cache_key, info)
+
+        return info
+
     def force_stop_app(self, package_name):
         """强制停止应用"""
         self.check_device()
@@ -868,18 +1109,31 @@ class ADBHelper:
             try:
                 remote_path = "/sdcard/screen.png"
                 device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
-                local_filename = f"screenshot_{int(time.time())}{device_suffix}.png"
+
+                # 文件名追加 "_可用宽dp x 可用高dp"，便于按屏幕尺寸归档。
+                # 查询走 _shell_silent，不污染日志；失败时退化为无后缀。
+                size_suffix = ""
+                try:
+                    info = self.get_screen_info()
+                    aw = re.match(r"(\d+)", str(info.get("avail_w", "")))
+                    ah = re.match(r"(\d+)", str(info.get("avail_h", "")))
+                    if aw and ah:
+                        size_suffix = f"_{aw.group(1)}x{ah.group(1)}"
+                except Exception:
+                    pass
+
+                local_filename = f"screenshot_{int(time.time())}{device_suffix}{size_suffix}.png"
                 local_path = os.path.join(temp_dir, local_filename)
-                
+
                 self.execute_adb_command(["adb", "shell", "screencap", "-p", remote_path])
                 self.execute_adb_command(["adb", "pull", remote_path, local_path])
                 self.execute_adb_command(["adb", "shell", "rm", remote_path])
-                
+
                 if on_complete:
                     on_complete(local_path)
             except Exception as e:
                 self.log(f"截图失败: {e}", "ERROR")
                 if on_complete: on_complete(None)
-        
+
         threading.Thread(target=_thread, daemon=True).start()
 
