@@ -409,7 +409,7 @@ class AppManageTab(ctk.CTkFrame):
             temp_dir = self.config_manager.get_temp_dir()
             if not os.path.exists(temp_dir):
                 os.makedirs(temp_dir)
-                
+
             try:
                 if self.adb_helper.start_recording():
                     self.is_recording = True

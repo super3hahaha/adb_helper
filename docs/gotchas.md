@@ -47,6 +47,21 @@
 
 调用方（截图文件名拼"可用宽x可用高"那段）走默认缓存路径，加速截图。
 
+### `screenrecord` 默认 20 Mbps，必须显式降码率
+
+不传 `--bit-rate` 时 Android 用 20 Mbps，1 分钟 ≈ 150 MB。UI 录屏内容（纯色/文字）压缩效率极高，4 Mbps 肉眼无差、2 Mbps 仍清晰。`start_recording(bit_rate=...)` 默认 4 Mbps，约 30 MB/分钟。参数单位是 bps，传 `int`。
+
+### `content call ... scan_file` 不递归，传文件夹用 `find -exec`
+
+`content call --uri content://media --method scan_file --arg <path>` 只接受**单个文件路径**，传目录是 no-op，里面的文件不会进媒体库。`push_files` 推完一个文件夹后用 `adb shell find '<dir>' -type f -exec content call ... --arg {} \;`，一条命令把所有文件扫掉。实测 Android 11 / Android 16 toybox 的 `find -exec` + `\;` 转义都工作正常，每个文件都会单独触发 `content call` 并返回 `Result: Bundle[...]`，MediaStore 入库可用 `content query --uri content://media/external/audio/media --where "_data='<path>'"` 验证。
+
+排查"推了但文件管理器/媒体库没看到"时，**先看排序方式**：`adb push` 默认保留源文件的 mtime（源文件常常是几年前的），文件管理器按日期排序时新推的文件会沉底，看着像没生效。`push_files` 里 push 完会先 `touch` 把 mtime 改成设备当前时间再 scan，这样按日期排序的文件管理器/媒体库就能看到新文件排在前面。
+
+替代方案为什么都不用:
+- `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://...`：实测 Android 16 仍然能触发扫描，但 Android 7+ 对 `file://` URI 有限制、文档上不推荐，且和 `content call` 是单文件粒度同样的工作量。`content call` 既然在 11/16 都 work，没必要换。
+- `cmd media scan <path>`：Android 16 上 `cmd: Can't find service: media`，没这个服务。
+- 按媒体后缀（jpg/mp4/...）过滤：没必要。能否入库由系统侧 MediaScanner 根据文件内容判断，对非媒体（如 .txt）调 `scan_file` 也是 no-op、无副作用。
+
 ### Cutout 字段名也不统一
 
 `DisplayCutout{...}` 里早期是 `safeInsets=Rect(L, T - R, B)`，新版本是 `insets=Rect(...)`。两个都要兼容，全 0 视为「无」。

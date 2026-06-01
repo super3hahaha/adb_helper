@@ -412,6 +412,11 @@ class ADBHelper:
         self.check_device()
         return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.DATE_SETTINGS"])
 
+    def open_language_settings(self):
+        """唤起系统语言设置"""
+        self.check_device()
+        return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.LOCALE_SETTINGS"])
+
     ADB_KB_PKG = "com.android.adbkeyboard"
     ADB_KB_IME = f"{ADB_KB_PKG}/.AdbIME"
 
@@ -598,16 +603,48 @@ class ADBHelper:
                 if os.path.isdir(local_path):
                     push_local_path = os.path.join(local_path, ".")
 
+            # 推送前打一条 "开始推送" 日志，让用户在 adb push 沉默期间知道任务在跑
+            display_name = os.path.basename(os.path.normpath(local_path)) or local_path
+            if os.path.isdir(local_path):
+                try:
+                    file_count = sum(len(files) for _, _, files in os.walk(local_path))
+                except OSError:
+                    file_count = 0
+                self.log(f"开始推送 {display_name} ({file_count} 个文件)...", "INFO")
+            else:
+                self.log(f"开始推送 {display_name}...", "INFO")
+
             # 兼容路径带空格的情况，虽然 execute_adb_command 内部用列表传参通常不需要加引号
             # 但为防万一，确保传入的是纯净路径
             cmd = ["adb", "push", push_local_path, push_remote_path]
             success, msg = self.execute_adb_command(cmd)
             if success:
+                self.log(f"推送完成: {display_name}", "SUCCESS")
                 success_count += 1
-                # push 成功后触发媒体扫描，让文件立即在相册/文件管理器中可见
+                # push 成功后:
+                # 1) touch 把 mtime 改为设备当前时间——adb push 默认保留源文件 mtime,
+                #    源文件常是几年前的，文件管理器按日期排序时新推的文件会沉底，看着像"没传上"
+                # 2) 触发媒体扫描，让文件立即在相册/媒体库中可见
+                # scan_file 仅对单个文件生效；推送文件夹时用 find -exec 递归处理每个文件
                 scan_path = push_remote_path.replace("/sdcard/", "/storage/emulated/0/", 1)
-                shell_cmd = f"content call --uri content://media --method scan_file --arg '{scan_path}'"
-                self.execute_adb_command(["adb", "shell", shell_cmd])
+                safe_path = scan_path.replace("'", "'\\''")
+                if os.path.isdir(local_path):
+                    shell_cmd = (
+                        f"find '{safe_path}' -exec touch {{}} \\; ; "
+                        f"find '{safe_path}' -type f -exec "
+                        f"content call --uri content://media --method scan_file --arg {{}} \\;"
+                    )
+                else:
+                    shell_cmd = (
+                        f"touch '{safe_path}' ; "
+                        f"content call --uri content://media --method scan_file --arg '{safe_path}'"
+                    )
+                self.log(f"通知媒体库扫描: {display_name}...", "INFO")
+                scan_ok, _ = self.execute_adb_command(["adb", "shell", shell_cmd])
+                if scan_ok:
+                    self.log(f"媒体库通知完成: {display_name}", "SUCCESS")
+                else:
+                    self.log(f"媒体库通知失败: {display_name}（文件已推送，仅扫描未成功）", "ERROR")
             else:
                 errors.append(f"Push failed for {os.path.basename(local_path)}: {msg}")
 
@@ -1044,7 +1081,7 @@ class ADBHelper:
             "WARNING"
         )
 
-    def start_recording(self):
+    def start_recording(self, bit_rate=4_000_000):
         try:
             self.check_device()
         except NoDeviceConnectedError as e:
@@ -1056,7 +1093,9 @@ class ADBHelper:
 
         self.enable_show_touches()
 
-        cmd = [self.adb_cmd, "-s", self.current_device_id, "shell", "screenrecord", "/sdcard/screen_record_tmp.mp4"]
+        cmd = [self.adb_cmd, "-s", self.current_device_id, "shell",
+               "screenrecord", "--bit-rate", str(int(bit_rate)),
+               "/sdcard/screen_record_tmp.mp4"]
 
         try:
             kwargs = self._get_subprocess_kwargs(capture_output=False, text=False)

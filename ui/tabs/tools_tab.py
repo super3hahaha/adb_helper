@@ -160,7 +160,7 @@ class ToolsTab(ctk.CTkFrame):
         self.btn_screen_info.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         frame_nav_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
-        frame_nav_btns.pack(pady=(1, 4), padx=8, fill="x")
+        frame_nav_btns.pack(pady=(1, 1), padx=8, fill="x")
         frame_nav_btns.grid_columnconfigure(0, weight=1, uniform="nav")
         frame_nav_btns.grid_columnconfigure(1, weight=1, uniform="nav")
         ctk.CTkButton(frame_nav_btns, text="切换全面屏手势", height=sys_btn_h,
@@ -168,12 +168,17 @@ class ToolsTab(ctk.CTkFrame):
         ctk.CTkButton(frame_nav_btns, text="切换为三键导航", height=sys_btn_h,
                       command=self.action_enable_threebutton_nav).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
+        frame_lang_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
+        frame_lang_btns.pack(pady=(1, 4), padx=8, fill="x")
+        frame_lang_btns.grid_columnconfigure(0, weight=1, uniform="lang")
+        frame_lang_btns.grid_columnconfigure(1, weight=1, uniform="lang")
+        ctk.CTkButton(frame_lang_btns, text="切换系统语言", height=sys_btn_h,
+                      command=self.action_open_language_settings).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ctk.CTkButton(frame_lang_btns, text="唤起系统时间与日期设置", height=sys_btn_h,
+                      command=self.action_open_date_settings).grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
     def _init_simulation_ui(self):
         sim_btn_h = 28  # 紧凑按钮高度
-
-        # 唤起系统时间设置
-        ctk.CTkButton(self.container_simulation, text="唤起系统时间与日期设置", height=sim_btn_h,
-                      command=self.action_open_date_settings).pack(pady=(6, 3), padx=10, fill="x")
 
         # 1.5 弱网/断网模拟
         frame_proxy = ctk.CTkFrame(self.container_simulation)
@@ -633,6 +638,15 @@ class ToolsTab(ctk.CTkFrame):
                 self.log("已唤起设备系统时间设置页", "SUCCESS")
             except Exception as e:
                 self.log(f"唤起时间设置失败: {e}", "ERROR")
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_open_language_settings(self):
+        def _thread():
+            try:
+                self.adb_helper.open_language_settings()
+                self.log("已唤起设备系统语言设置页", "SUCCESS")
+            except Exception as e:
+                self.log(f"唤起语言设置失败: {e}", "ERROR")
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_query_device_info(self):
