@@ -26,8 +26,9 @@ jobs:
       - name: Verify APP_VERSION matches tag
         shell: bash
         run: |
+          # 不用 grep -P：macOS 的 BSD grep 没这个 flag。改 sed，跨 Linux/macOS/Git-Bash 都行。
           TAG_VER="${GITHUB_REF_NAME#v}"
-          CODE_VER=$(grep -oP 'APP_VERSION = "\K[^"]+' core/config.py)
+          CODE_VER=$(sed -n 's/^APP_VERSION = "\(.*\)"$/\1/p' core/config.py)
           if [ "$TAG_VER" != "$CODE_VER" ]; then
             echo "::error::Tag $GITHUB_REF_NAME but APP_VERSION in core/config.py is $CODE_VER — did you forget to bump?"
             exit 1
