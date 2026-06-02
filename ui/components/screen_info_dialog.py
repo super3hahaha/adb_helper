@@ -1,17 +1,23 @@
+import threading
 import customtkinter as ctk
 
 
 class ScreenInfoDialog(ctk.CTkToplevel):
-    """屏幕信息弹窗：以分组卡片形式展示设备/屏幕/系统占用/可用区域，右上角支持复制为文本。"""
+    """屏幕信息弹窗：以分组卡片形式展示设备/屏幕/系统占用/可用区域，右上角支持复制/刷新。
 
-    def __init__(self, parent, info, log_func=None):
+    refresh_fn (可选): 无参函数，返回新的 info dict。点"刷新"时在后台线程调用、
+    回到主线程重建卡片。通常传 lambda: adb_helper.get_screen_info(force_refresh=True)。
+    """
+
+    def __init__(self, parent, info, log_func=None, refresh_fn=None):
         super().__init__(parent)
         self.info = info or {}
         self.log = log_func
+        self.refresh_fn = refresh_fn
 
         self.title("屏幕信息")
-        self.geometry("500x720")
-        self.minsize(420, 500)
+        self.geometry("500x580")
+        self.minsize(420, 480)
         self.transient(parent.winfo_toplevel())
 
         # 居中
@@ -32,27 +38,72 @@ class ScreenInfoDialog(ctk.CTkToplevel):
             command=self.copy_info,
         )
         self.btn_copy.pack(side="right")
+        if self.refresh_fn:
+            self.btn_refresh = ctk.CTkButton(
+                header, text="刷新", width=56, height=28,
+                fg_color="transparent", text_color="#3B8ED0",
+                hover_color=("gray85", "gray25"),
+                command=self._on_refresh,
+            )
+            self.btn_refresh.pack(side="right", padx=(0, 4))
 
-        # 滚动容器
-        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # 卡片容器（刷新时清空重建）
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self._render_cards()
+
+    def _render_cards(self):
+        # 清空旧卡片
+        for w in self.scroll.winfo_children():
+            w.destroy()
 
         info = self.info
-        self._make_card(scroll, "屏幕尺寸", [
+        self._make_card(self.scroll, "屏幕尺寸", [
             ("屏幕宽度", f"{info.get('dp_w', '?')} dp · {info.get('px_w', '?')} px"),
             ("屏幕高度", f"{info.get('dp_h', '?')} dp · {info.get('px_h', '?')} px"),
             ("屏幕方向", info.get("orientation", "未知")),
         ])
-        self._make_card(scroll, "系统占用", [
+        self._make_card(self.scroll, "系统占用", [
             ("顶部状态栏", info.get("status_bar", "未知")),
             ("刘海 / 挖孔", info.get("cutout", "无")),
             ("底部导航 / 手势条", info.get("nav_bar", "未知")),
             ("侧边手势区", info.get("side_gesture", "无")),
         ])
-        self._make_card(scroll, "可用区域", [
+        self._make_card(self.scroll, "可用区域", [
             ("可用宽度", info.get("avail_w", "未知")),
             ("可用高度", info.get("avail_h", "未知")),
         ])
+
+    def _on_refresh(self):
+        if not self.refresh_fn:
+            return
+        self.btn_refresh.configure(state="disabled", text="刷新中")
+
+        def _thread():
+            err = None
+            new_info = None
+            try:
+                new_info = self.refresh_fn()
+            except Exception as e:
+                err = str(e)
+
+            def _on_done():
+                if not self.winfo_exists():
+                    return
+                self.btn_refresh.configure(state="normal", text="刷新")
+                if err:
+                    if self.log:
+                        self.log(f"刷新屏幕信息失败: {err}", "ERROR")
+                    return
+                self.info = new_info or {}
+                self._render_cards()
+                if self.log:
+                    self.log("已刷新屏幕信息", "SUCCESS")
+
+            self.after(0, _on_done)
+
+        threading.Thread(target=_thread, daemon=True).start()
 
     def _center_window(self):
         try:

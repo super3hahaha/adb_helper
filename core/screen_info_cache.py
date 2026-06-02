@@ -27,7 +27,11 @@ _CACHE_FILE = os.path.join(
 # v4 -> 缓存键改为 Configuration w/h 字符串，但仍用 grep dumpsys，第一个匹配未必是当前全局
 # v5 -> key 探针从 grep dumpsys 改为 `am get-config`，更可靠且更快
 # v6 -> 修复 Android 12+ statusBars/navigationBars 解析，老缓存里 status_bar/nav_bar="未知" 的脏值需淘汰
-_SCHEMA_VERSION = 6
+# v7 -> 新增 Android 10 三星 ROM 的 BarController.* 兜底解析，淘汰这类机型遗留的 "未知" 脏缓存
+# v8 -> 横屏修复：状态栏/导航栏厚度从 b-t 改为 min(w, h)，淘汰横屏下 nav_bar = 整个屏幕高度的脏缓存
+# v9 -> 修复退化 frame (w=0 或 h=0) 误判为有效区域，淘汰横屏下 side_gesture = 屏幕高度 的脏缓存
+# v10 -> 尊重 InsetsSource 的 visible=true/false，invisible 当 0；淘汰把不可见条带按潜在尺寸报的脏缓存
+_SCHEMA_VERSION = 10
 
 
 def _load():

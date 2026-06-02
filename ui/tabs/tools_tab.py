@@ -682,7 +682,10 @@ class ToolsTab(ctk.CTkFrame):
                     messagebox.showerror("失败", f"查询屏幕信息失败:\n{err}", parent=self)
                     return
                 from ui.components.screen_info_dialog import ScreenInfoDialog
-                ScreenInfoDialog(self, info, log_func=self.log)
+                ScreenInfoDialog(
+                    self, info, log_func=self.log,
+                    refresh_fn=lambda: self.adb_helper.get_screen_info(force_refresh=True),
+                )
                 self.log("已查询屏幕信息", "SUCCESS")
 
             self.after(0, _on_done)

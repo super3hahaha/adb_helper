@@ -293,15 +293,33 @@ class ADBHelper:
         # 而且左右手势区域改用 boundingRects 描述。这里左右手势检测仅保留旧格式兼容。
         def _frame_of(*type_names):
             alt = "|".join(re.escape(n) for n in type_names)
+            # 同时抓 frame 和后面跟着的 visible=true/false。visible 段不强制存在，
+            # Android 11 的早期 InsetsSource 没这个字段，匹配不到时默认按 visible 处理。
             m = re.search(
-                rf"InsetsSource(?:\s+id=\S+)?\s+type=(?:{alt})\s+frame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                rf"InsetsSource(?:\s+id=\S+)?\s+type=(?:{alt})\s+frame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]"
+                rf"(?:\s+visible=(true|false))?",
                 dw,
             )
             if not m:
                 return None
-            fl, ft, fr, fb = map(int, m.groups())
+            fl, ft, fr, fb = map(int, m.groups()[:4])
+            vis = m.group(5)
+            visible = (vis != "false")  # None 或 "true" 都按可见处理（旧 fmt 没这字段）
+            w, h = fr - fl, fb - ft
+            # thickness = 较短边。状态栏永远是细横条 (w >> h)，导航栏在竖屏是横条
+            # (w >> h)、横屏旋转到屏幕侧边变成细竖条 (h >> w)，侧边手势始终是细竖条
+            # (h >> w)。取较短边天然处理这两种情况。
+            # 但 InsetsSource 也会用"退化 frame"（w=0 或 h=0 的"线"）表示该条带不存在，
+            # 例: TYPE_LEFT_GESTURES frame=[0,0][0,2220] 表示"无左手势区"。
+            # 任一维 = 0 视为不存在，thickness=0。
+            # 此外 visible=false 表示该条带当前没占屏（如小米手势导航无指示条），
+            # 直接当 0；想看"潜在尺寸"再说，目前只反映"当前实际占用"。
+            if not visible or w <= 0 or h <= 0:
+                thickness = 0
+            else:
+                thickness = min(w, h)
             return {"l": fl, "t": ft, "r": fr, "b": fb,
-                    "w": fr - fl, "h": fb - ft}
+                    "w": w, "h": h, "visible": visible, "thickness": thickness}
 
         sb = _frame_of("ITYPE_STATUS_BAR", "statusBars")
         nb = _frame_of("ITYPE_NAVIGATION_BAR", "navigationBars")
@@ -309,18 +327,50 @@ class ADBHelper:
         rg = _frame_of("ITYPE_RIGHT_GESTURES")
 
         if sb is not None:
-            info["status_bar"] = f"{round(sb['h'] * scale)} dp"
+            th = round(sb['thickness'] * scale)
+            info["status_bar"] = f"{th} dp" if th > 0 else "无"
         if nb is not None:
-            info["nav_bar"] = f"{round(nb['h'] * scale)} dp"
+            th = round(nb['thickness'] * scale)
+            info["nav_bar"] = f"{th} dp" if th > 0 else "无"
         if lg is not None or rg is not None:
-            lw = lg["w"] if lg else 0
-            rw = rg["w"] if rg else 0
+            lw = lg["thickness"] if lg else 0
+            rw = rg["thickness"] if rg else 0
             if lw > 0 or rw > 0:
                 info["side_gesture"] = f"L {round(lw*scale)} dp / R {round(rw*scale)} dp"
             else:
                 info["side_gesture"] = "无"
 
-        # --- 回退：旧格式（Android 10 及更早） ---
+        # --- 回退 1：Android 10 三星等 ROM，InsetsSource 用 TYPE_TOP_BAR / TYPE_SIDE_BAR_1
+        # 这种厂商私有常量名，硬列别名穷不完。直接从 BarController 段读 mContentFrame，
+        # 这俩字段在 Android 7-10 跨厂商都比较稳定。
+        # 例:
+        #   BarController.StatusBar
+        #       mContentFrame=Rect(0, 0 - 1080, 63)        ← (L, T - R, B) 注意 ' - ' 分隔
+        #   BarController.NavigationBar
+        #       mContentFrame=Rect(0, 2094 - 1080, 2220)
+        def _bar_thickness(section_name):
+            """从 BarController.<section> 的 mContentFrame 提取较短边作为厚度（dp）。"""
+            m = re.search(
+                rf"BarController\.{section_name}.*?mContentFrame=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)",
+                dw, re.DOTALL,
+            )
+            if not m:
+                return None
+            l, t, r, b = map(int, m.groups())
+            w, h = r - l, b - t
+            # 任一维 = 0 视为不存在（同 _frame_of 注释）
+            return min(w, h) if w > 0 and h > 0 else 0
+
+        if info["status_bar"] == "未知":
+            th = _bar_thickness("StatusBar")
+            if th is not None:
+                info["status_bar"] = f"{round(th * scale)} dp"
+        if info["nav_bar"] == "未知":
+            th = _bar_thickness("NavigationBar")
+            if th is not None:
+                info["nav_bar"] = f"{round(th * scale)} dp"
+
+        # --- 回退 2：更老的版本，从 stableInsets 整段拿 ---
         if info["status_bar"] == "未知" and info["nav_bar"] == "未知":
             l = t = r = b = None
             m_in1 = re.search(

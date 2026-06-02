@@ -18,9 +18,52 @@
   - 状态栏高度 = `frame.bottom - frame.top`
   - 导航栏高度 = `frame.bottom - frame.top`
   - 左/右手势区宽度 = `frame.right - frame.left`
+- **Android 10 三星 / 部分厂商 ROM**：InsetsSource 名字又换了一套，不是 `ITYPE_*`，是 `TYPE_TOP_BAR` / `TYPE_SIDE_BAR_1` / `TYPE_TOP_TAPPABLE_ELEMENT` / `TYPE_BOTTOM_TAPPABLE_ELEMENT` / `TYPE_TOP_GESTURES` 等。**这类厂商私有常量名穷举不完**，不要试图列别名。
 - **Android 10 及更早**：用 `mStableInsets=Insets{left=L, top=T, right=R, bottom=B}` 或 `stableInsets=[L,T][R,B]`，是"insets 厚度"而不是 frame，直接 L/T/R/B 就是各方向占用。
 
-`adb_helper.get_screen_info()` 用同一个正则同时兼容 Android 11/12+ 两种 InsetsSource fmt（接受任意 type 名 + 可选 id 段），落空再退到 Android 10 的 stableInsets 格式。新机型如果再出新 fmt，先 dump 一份原始输出再补正则。
+**`adb_helper.get_screen_info()` 的解析顺序**：
+
+1. 先按 `InsetsSource(?:\s+id=<hex>)?\s+type=(?:ITYPE_STATUS_BAR|statusBars)\s+frame=...` 同时匹配 Android 11/12+ 标准 fmt
+2. 落空 → 退到 `BarController.StatusBar` / `BarController.NavigationBar` 的 `mContentFrame=Rect(L, T - R, B)`。这俩字段从 Android 7 一直存在到 10，跨厂商**比 InsetsSource type 名字稳得多**，三星魔改 Android 10 也照样有
+3. 再落空 → 退到极旧的 `mStableInsets=Insets{...}` 或 `stableInsets=[...]`
+
+新机型再出新 fmt，先 dump 一份原始输出再补正则；**别在 step 1 里硬列三星 / 小米 / 华为各自的 TYPE_* 别名，那条路无止境**。
+
+### 横屏时导航栏 frame 翻 90°，必须用 `min(w, h)` 拿厚度
+
+竖屏：导航栏 frame `[0,2094][1080,2220]` → 宽 1080、高 126，水平条带
+横屏：导航栏 frame `[2214,0][2340,1080]` → 宽 126、高 1080，**竖向条带**（被旋转到屏幕右侧）
+
+直接拿 `frame.b - frame.t`（"高度"）当导航栏厚度，竖屏没问题，横屏会拿到整个屏幕高度 1080 px。后果：弹窗显示"导航栏 393 dp"，且可用高度 = dp_h − 状态栏 − 导航栏 = 负数。
+
+正解：**取 `min(frame_w, frame_h)` 作为厚度**，无论横竖屏都正确。状态栏、导航栏、侧边手势都适用。Cutout 的 safeInsets 用法不同（按方向分四边），不受这个影响。
+
+### 退化 frame (w=0 或 h=0) 表示"该区域不存在"，不是"零厚度细线"
+
+dumpsys 里有些 InsetsSource 会给出退化的 frame（其中一维 = 0），表示该系统区域**不存在**而不是"零厚度"：
+
+```
+InsetsSource type=TYPE_LEFT_GESTURES  frame=[0,0][0,2220]    ← 宽 0，高 = 屏幕高
+InsetsSource type=TYPE_RIGHT_GESTURES frame=[1080,0][1080,2220]  ← 宽 0，高 = 屏幕高
+```
+
+这表示"无左/右手势区"。但如果 thickness 计算时遇到 w=0 直接取 max(w,h)，就会把"屏幕高度"误当成厚度，弹窗会显示"侧边手势区 L 393 dp / R 393 dp"。
+
+正解：**任一维 = 0 就视为该区域不存在，thickness = 0**。`thickness = min(w, h) if w > 0 and h > 0 else 0`。
+
+### InsetsSource 的 `visible=true/false` 必须读
+
+```
+InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=false
+```
+
+`visible=false` 表示该条带**当前没有实际占据屏幕**——例：小米/MIUI 手势导航无指示条，nav bar 的 frame 仍报 47 dp 但 `visible=false`，App 内容能延伸到屏幕底部，用户视觉上不存在导航栏。
+
+如果不看 visible 直接按 frame 报，弹窗会显示"导航栏 47 dp"，但截图/视觉上是 0 占用。
+
+正解：**`visible=false` 直接 thickness=0**。Android 11 早期 fmt 没有这个字段，匹配不到时按可见处理（向前兼容）。
+
+如果以后想区分"潜在保留尺寸"和"当前实际占用"，可以两个值都返回；目前只反映"当前实际占用"，这对截图、UI 测量等下游用途更直接。
 
 ### `dumpsys` 输出几十 KB，别走 `execute_adb_command`
 
