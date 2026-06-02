@@ -70,6 +70,10 @@ jobs:
         id: tag_msg
         shell: bash
         run: |
+          # actions/checkout@v4 会用 `+<sha>:refs/tags/<name>` 把 tag ref 强制指向
+          # commit sha，annotated tag 退化为 lightweight，%(contents) 退化为 commit
+          # message。这里强制重新拉一次 tags 把 ref 还原指向 tag object。
+          git fetch --tags --force origin
           MSG=$(git tag -l --format='%(contents)' "${{ github.ref_name }}")
           echo "body<<TAGEOF" >> "$GITHUB_OUTPUT"
           echo "$MSG" >> "$GITHUB_OUTPUT"

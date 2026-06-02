@@ -68,20 +68,29 @@
 
 ## CI / 发版
 
-### Tag annotation 必须 `fetch-tags: true` 才能在 runner 上读到
+### `actions/checkout@v4` 会把 annotated tag 退化成 lightweight
 
-`actions/checkout@v4` 默认 `fetch-depth: 1`，对 tag-push 触发的 workflow 只会拉到 tag 指向的 commit，**不会拉 tag 对象本身**。这种半残状态下 `git tag -l --format='%(contents)' vX.Y.Z` 退化为返回 commit message（git 对 lightweight tag 的回退行为），看起来好像有内容、实际是错的。
+tag-push 触发的 workflow，checkout 内部其实做了两次 fetch：
 
-解决：
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-tags: true
-    fetch-depth: 0
+```
+1) fetch +refs/tags/*:refs/tags/*           ← tag object 和 annotation 完整拉下
+2) fetch --no-tags +<commit-sha>:refs/tags/<name>  ← 强制让 ref 指向 commit sha
 ```
 
-排查思路：如果发现 GitHub Release 的 body 跟 tag 注释对不上、变成了某个 commit 的 message，多半就是这个坑。
+第二步把 `refs/tags/vX.Y.Z` 重写成指向 commit 而不是 tag object（tag object 还在 `.git/objects` 里没删，只是 ref 不指了）。后果：`git tag -l --format='%(contents)' vX.Y.Z` 退化为返回 commit message（git 对 lightweight tag 的回退行为），加 `fetch-tags: true` / `fetch-depth: 0` 都没用，因为第二步会再次覆盖。
+
+解决：在 step 内手动恢复 ref：
+
+```yaml
+- name: Get tag annotation
+  shell: bash
+  run: |
+    git fetch --tags --force origin   # 把 ref 还原回指向 tag object
+    MSG=$(git tag -l --format='%(contents)' "${{ github.ref_name }}")
+    ...
+```
+
+排查思路：如果发现 GitHub Release 的 body 跟 tag 注释对不上、变成了某个 commit 的 message，多半就是这个坑。验证手段是看 checkout step 日志里有没有 `t [tag update]` 字样。
 
 ### Workflow step 跑 Bash 脚本必须显式 `shell: bash`
 
