@@ -8,13 +8,19 @@
 
 不同 Android 版本输出完全不同：
 
-- **Android 11+（Samsung One UI 等）**：用 `InsetsSource type=ITYPE_XXX frame=[L,T][R,B]`，每个系统条带单独一行。`frame` 是该条带在屏幕上的矩形位置，所以：
+- **Android 12+ / Pixel-AOSP / Android 16**：
+  `InsetsSource id=<hex> type=statusBars frame=[L,T][R,B] visible=false ...`
+  - `type=` 从 ITYPE 常量名改成 camelCase：`statusBars` / `navigationBars` / `displayCutout` / `systemGestures` / `mandatorySystemGestures` / `tappableElement` / `ime`
+  - InsetsSource 和 type= 之间多一段 `id=<hex>`
+  - 多了 `visible=true|false` —— 这是当前可见状态，**但 frame 本身仍是显示时的尺寸**，所以即便 visible=false 也要照样解析
+  - **左/右手势区不再单独输出**为 `LEFT_GESTURES` / `RIGHT_GESTURES`，统一进 `systemGestures`，左右边由 `boundingRects=...` 描述（不在 frame 里）
+- **Android 11**（早期 InsetsSource）：`InsetsSource type=ITYPE_XXX frame=[L,T][R,B]`。`frame` 是条带在屏幕上的矩形位置：
   - 状态栏高度 = `frame.bottom - frame.top`
   - 导航栏高度 = `frame.bottom - frame.top`
   - 左/右手势区宽度 = `frame.right - frame.left`
 - **Android 10 及更早**：用 `mStableInsets=Insets{left=L, top=T, right=R, bottom=B}` 或 `stableInsets=[L,T][R,B]`，是"insets 厚度"而不是 frame，直接 L/T/R/B 就是各方向占用。
 
-`adb_helper.get_screen_info()` 已同时兼容两种，先试 Android 11+ 格式，落空再用旧格式。如果出现新机型解析失败，先 dump 一份原始输出再补正则。
+`adb_helper.get_screen_info()` 用同一个正则同时兼容 Android 11/12+ 两种 InsetsSource fmt（接受任意 type 名 + 可选 id 段），落空再退到 Android 10 的 stableInsets 格式。新机型如果再出新 fmt，先 dump 一份原始输出再补正则。
 
 ### `dumpsys` 输出几十 KB，别走 `execute_adb_command`
 

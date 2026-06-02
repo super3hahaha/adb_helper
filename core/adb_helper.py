@@ -282,14 +282,19 @@ class ADBHelper:
         dw = self._shell_silent(["shell", "dumpsys", "window"])
 
         # --- 系统占用：先尝试 Android 11+ 的 InsetsSource 格式 ---
-        # 例：InsetsSource type=ITYPE_STATUS_BAR frame=[0,0][1200,54]
+        # Android 11:   InsetsSource type=ITYPE_STATUS_BAR frame=[0,0][1200,54]
+        # Android 12+:  InsetsSource id=acc40000 type=statusBars frame=[0,0][1080,136] visible=false ...
+        # 两个 fmt 差异：type= 从 ITYPE_XXX 常量改 camelCase；中间多 id=<hex>；后面多 visible=...
         # frame=[L,T][R,B] 即该 inset 条带在屏幕上的矩形位置：
         #   状态栏（顶部条）高度 = B - T
         #   导航栏（底部条）高度 = B - T
         #   左/右手势区（侧边条）宽度 = R - L
-        def _frame_of(type_name):
+        # 注意 Android 12+ 不再单独输出 ITYPE_LEFT/RIGHT_GESTURES，统一进 systemGestures，
+        # 而且左右手势区域改用 boundingRects 描述。这里左右手势检测仅保留旧格式兼容。
+        def _frame_of(*type_names):
+            alt = "|".join(re.escape(n) for n in type_names)
             m = re.search(
-                rf"InsetsSource type={type_name}\s+frame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                rf"InsetsSource(?:\s+id=\S+)?\s+type=(?:{alt})\s+frame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
                 dw,
             )
             if not m:
@@ -298,8 +303,8 @@ class ADBHelper:
             return {"l": fl, "t": ft, "r": fr, "b": fb,
                     "w": fr - fl, "h": fb - ft}
 
-        sb = _frame_of("ITYPE_STATUS_BAR")
-        nb = _frame_of("ITYPE_NAVIGATION_BAR")
+        sb = _frame_of("ITYPE_STATUS_BAR", "statusBars")
+        nb = _frame_of("ITYPE_NAVIGATION_BAR", "navigationBars")
         lg = _frame_of("ITYPE_LEFT_GESTURES")
         rg = _frame_of("ITYPE_RIGHT_GESTURES")
 

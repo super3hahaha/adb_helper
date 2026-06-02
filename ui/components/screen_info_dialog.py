@@ -52,8 +52,6 @@ class ScreenInfoDialog(ctk.CTkToplevel):
         self._make_card(scroll, "可用区域", [
             ("可用宽度", info.get("avail_w", "未知")),
             ("可用高度", info.get("avail_h", "未知")),
-            ("Configuration 宽", info.get("config_w", "未知")),
-            ("Configuration 高", info.get("config_h", "未知")),
         ])
 
     def _center_window(self):
@@ -110,8 +108,6 @@ class ScreenInfoDialog(ctk.CTkToplevel):
             "# 可用区域",
             f"可用宽度: {info.get('avail_w', '未知')}",
             f"可用高度: {info.get('avail_h', '未知')}",
-            f"Configuration 宽: {info.get('config_w', '未知')}",
-            f"Configuration 高: {info.get('config_h', '未知')}",
         ]
         text = "\n".join(lines)
         try:

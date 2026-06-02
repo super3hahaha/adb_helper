@@ -26,7 +26,8 @@ _CACHE_FILE = os.path.join(
 # v3 -> 横屏时 dp_w/dp_h/px_w/px_h 互换为当前方向值，避免 wm size 返回自然方向导致显示反了
 # v4 -> 缓存键改为 Configuration w/h 字符串，但仍用 grep dumpsys，第一个匹配未必是当前全局
 # v5 -> key 探针从 grep dumpsys 改为 `am get-config`，更可靠且更快
-_SCHEMA_VERSION = 5
+# v6 -> 修复 Android 12+ statusBars/navigationBars 解析，老缓存里 status_bar/nav_bar="未知" 的脏值需淘汰
+_SCHEMA_VERSION = 6
 
 
 def _load():
