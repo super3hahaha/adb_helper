@@ -23,6 +23,17 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
+      - name: Verify APP_VERSION matches tag
+        shell: bash
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CODE_VER=$(grep -oP 'APP_VERSION = "\K[^"]+' core/config.py)
+          if [ "$TAG_VER" != "$CODE_VER" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME but APP_VERSION in core/config.py is $CODE_VER — did you forget to bump?"
+            exit 1
+          fi
+          echo "✓ Version match: $CODE_VER"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

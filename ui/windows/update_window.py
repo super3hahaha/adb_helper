@@ -114,7 +114,7 @@ class UpdateFlow:
 
         ctk.CTkButton(
             btn_frame, text="立即更新", width=120,
-            fg_color="#2563EB", hover_color="#1D4ED8",
+            fg_color="#3B8ED0", hover_color="#36719F",
             command=on_accept,
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
