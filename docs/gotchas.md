@@ -65,3 +65,35 @@
 ### Cutout 字段名也不统一
 
 `DisplayCutout{...}` 里早期是 `safeInsets=Rect(L, T - R, B)`，新版本是 `insets=Rect(...)`。两个都要兼容，全 0 视为「无」。
+
+## CI / 发版
+
+### Tag annotation 必须 `fetch-tags: true` 才能在 runner 上读到
+
+`actions/checkout@v4` 默认 `fetch-depth: 1`，对 tag-push 触发的 workflow 只会拉到 tag 指向的 commit，**不会拉 tag 对象本身**。这种半残状态下 `git tag -l --format='%(contents)' vX.Y.Z` 退化为返回 commit message（git 对 lightweight tag 的回退行为），看起来好像有内容、实际是错的。
+
+解决：
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-tags: true
+    fetch-depth: 0
+```
+
+排查思路：如果发现 GitHub Release 的 body 跟 tag 注释对不上、变成了某个 commit 的 message，多半就是这个坑。
+
+### Workflow step 跑 Bash 脚本必须显式 `shell: bash`
+
+windows-latest runner 的默认 shell 是 **PowerShell 7**（`pwsh`），写 `MSG=$(...)` 这类 Bash 赋值语法会直接报 `The term '...' is not recognized as a name of a cmdlet`。macOS / Ubuntu 默认就是 bash 所以察觉不到。
+
+解决：跨平台 step 内涉及 Bash 语法时显式声明：
+
+```yaml
+- name: Get tag annotation
+  shell: bash
+  run: |
+    MSG=$(...)
+```
+
+Windows runner 自带 Git Bash，`shell: bash` 会走它，不需要额外装。
