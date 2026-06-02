@@ -111,6 +111,21 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 - `cmd media scan <path>`：Android 16 上 `cmd: Can't find service: media`，没这个服务。
 - 按媒体后缀（jpg/mp4/...）过滤：没必要。能否入库由系统侧 MediaScanner 根据文件内容判断，对非媒体（如 .txt）调 `scan_file` 也是 no-op、无副作用。
 
+### `launch_app` 启动后会异步还原系统自动旋转开关
+
+部分 app（铃声/视频/直播类常见）申请了 `WRITE_SETTINGS`，启动时会偷偷把 `Settings.System.ACCELEROMETER_ROTATION` 改成 1，每次 monkey 启动都会污染设备状态。
+
+`adb_helper.launch_app()` 的处理：启动前快照 → 启动后异步等 2s → 变了就 put 回原值。绕过 `execute_adb_command`，用裸 `subprocess.run`，避免读 setting 的 `0`/`1` 输出把日志面板刷满。
+
+锁定快照时的 `device_id`，restore 前比对 `current_device_id`，防止延迟期间用户切设备误伤别的机器。如果以后发现 2s 不够（某些 app 启动慢、改 setting 时机晚），可以改成轮询窗口（如 5s 内每 0.5s 检查一次）。
+
+验证某个 app 是不是这种行为：
+```
+adb shell settings put system accelerometer_rotation 0
+adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1
+adb shell settings get system accelerometer_rotation   # 变 1 就是
+```
+
 ### Cutout 字段名也不统一
 
 `DisplayCutout{...}` 里早期是 `safeInsets=Rect(L, T - R, B)`，新版本是 `insets=Rect(...)`。两个都要兼容，全 0 视为「无」。

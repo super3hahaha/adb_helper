@@ -709,10 +709,59 @@ class ADBHelper:
             return False, f"Pushed {success_count}/{total_count} items. Errors: {'; '.join(errors)}"
 
     def launch_app(self, package_name):
-        """通过 monkey 命令启动 App (不需要知道 Activity)"""
+        """通过 monkey 命令启动 App (不需要知道 Activity)
+
+        部分 app（如带 WRITE_SETTINGS 权限的铃声/视频类）会在启动时偷改
+        系统的 ACCELEROMETER_ROTATION 开关。这里在启动前快照、启动后 2s
+        异步还原，避免污染设备状态。
+        """
         if not package_name:
             return False, "Package name is empty"
-        return self.execute_adb_command(["adb", "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"])
+
+        device_id = self.current_device_id
+        rotation_before = self._read_accelerometer_rotation(device_id) if device_id else None
+
+        result = self.execute_adb_command(["adb", "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"])
+
+        if rotation_before is not None:
+            threading.Thread(
+                target=self._restore_accelerometer_rotation,
+                args=(device_id, rotation_before, package_name),
+                daemon=True,
+            ).start()
+
+        return result
+
+    def _read_accelerometer_rotation(self, device_id):
+        """读取指定设备的系统自动旋转开关，失败返回 None。绕过 execute_adb_command 以避免日志噪音和设备切换副作用。"""
+        try:
+            result = subprocess.run(
+                [self.adb_cmd, "-s", device_id, "shell", "settings", "get", "system", "accelerometer_rotation"],
+                **self._get_subprocess_kwargs()
+            )
+            if result.returncode != 0:
+                return None
+            val = (result.stdout or "").strip()
+            return val if val in ("0", "1") else None
+        except Exception:
+            return None
+
+    def _restore_accelerometer_rotation(self, device_id, expected, package_name):
+        """启动 2s 后检查并还原 accelerometer_rotation。设备已切换则跳过。"""
+        time.sleep(2)
+        if self.current_device_id != device_id:
+            return
+        current = self._read_accelerometer_rotation(device_id)
+        if current is None or current == expected:
+            return
+        try:
+            subprocess.run(
+                [self.adb_cmd, "-s", device_id, "shell", "settings", "put", "system", "accelerometer_rotation", expected],
+                **self._get_subprocess_kwargs()
+            )
+            self.log(f"已还原系统自动旋转开关 {current} → {expected}（被 {package_name} 启动时修改）", "INFO")
+        except Exception as e:
+            self.log(f"还原自动旋转开关失败: {e}", "ERROR")
 
     def stop_app(self, package_name):
         """强制停止 App"""
