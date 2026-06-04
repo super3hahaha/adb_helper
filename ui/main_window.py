@@ -29,6 +29,8 @@ class MainWindow(TkinterDnD_CTk):
         self.config_manager = ConfigManager()
         # 初始化 ADB Helper，传入日志回调
         self.adb_helper = ADBHelper(log_callback=self.log_message)
+        # 让 ADB Helper 在文件名拼接时能查到设备别名
+        self.adb_helper.device_label_resolver = self.config_manager.get_device_alias
 
         # 窗口设置
         self.title(APP_NAME)
@@ -156,30 +158,46 @@ class MainWindow(TkinterDnD_CTk):
         from ui.windows.update_window import UpdateFlow
         UpdateFlow(self, log_func=self.log_message).start()
 
+    def _format_device_display(self, device_id):
+        """将设备序列号转成下拉框显示文本。"""
+        alias = self.config_manager.get_device_alias(device_id)
+        if alias:
+            return f"{alias} ({device_id})"
+        return device_id
+
     def refresh_device_list(self):
         """刷新设备列表"""
         self.log_message("正在刷新设备列表...", "INFO")
         devices = self.adb_helper.get_connected_devices()
-        
+
         if not devices:
+            self._device_display_map = {}
             self.device_selector.configure(values=[])
             self.device_var.set("未选择设备")
             self.adb_helper.current_device_id = None
             self.log_message("未检测到连接的设备", "WARNING")
             return
-            
-        self.device_selector.configure(values=devices)
-        
+
+        # 建立 显示文本 -> 真实序列号 的映射
+        display_values = []
+        self._device_display_map = {}
+        for d in devices:
+            disp = self._format_device_display(d)
+            display_values.append(disp)
+            self._device_display_map[disp] = d
+
+        self.device_selector.configure(values=display_values)
+
         # 智能联动逻辑
         current = self.adb_helper.current_device_id
         if current in devices:
             # 当前设备还在，保持选中
-            self.device_var.set(current)
+            self.device_var.set(self._format_device_display(current))
             self.log_message(f"刷新设备列表，保持选中: {current}", "INFO")
         else:
             # 默认选中第一个
             new_device = devices[0]
-            self.device_var.set(new_device)
+            self.device_var.set(self._format_device_display(new_device))
             self.adb_helper.current_device_id = new_device
             self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
 
@@ -193,7 +211,9 @@ class MainWindow(TkinterDnD_CTk):
     def on_device_change(self, selected_device):
         """用户手动切换设备"""
         if selected_device and selected_device != "未选择设备":
-            self.adb_helper.current_device_id = selected_device
+            # 显示文本反查真实设备号
+            real_id = getattr(self, "_device_display_map", {}).get(selected_device, selected_device)
+            self.adb_helper.current_device_id = real_id
             self.log_message(f"已切换当前操作设备为: {selected_device}", "SUCCESS")
             # 通知已打开的 Logcat / Firebase 窗口重置
             if hasattr(self, 'tab_app'):
@@ -287,8 +307,9 @@ class MainWindow(TkinterDnD_CTk):
         self.tab_tools = ToolsTab(self, self.adb_helper, self.config_manager, self.log_message)
         
         # 传入回调函数，实现跨 Tab 刷新
-        self.tab_settings = SettingsTab(self, self.adb_helper, self.config_manager, self.log_message, 
-                                      on_config_changed=self.refresh_global_app_list)
+        self.tab_settings = SettingsTab(self, self.adb_helper, self.config_manager, self.log_message,
+                                      on_config_changed=self.refresh_global_app_list,
+                                      on_device_aliases_changed=self.refresh_device_list)
                                       
         self.tab_apk_manager = APKManagerTab(self, self.adb_helper, self.config_manager, self.log_message)
 

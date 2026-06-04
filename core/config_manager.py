@@ -14,7 +14,8 @@ class ConfigManager:
         "default_device_push_path": "/sdcard/Download/",
         "apps": [],  # 格式: [{"name": "示例App", "pkg": "com.example.app", "keyword": "example"}]
         "hidden_apks": [],  # 隐藏的 APK 相对路径列表
-        "filter_words": []  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
+        "filter_words": [],  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
+        "device_aliases": {}  # 设备序列号 -> 别名，格式: {"0715f7bd99dd1b3a": "测试机 A"}
     }
 
     def __init__(self):
@@ -169,6 +170,83 @@ class ConfigManager:
         self.data["filter_words"] = words
         self.save_config()
         return True
+
+    # ========== 设备别名 ==========
+    def get_device_aliases(self):
+        """返回 {device_id: alias} 的字典副本。"""
+        aliases = self.data.get("device_aliases", {})
+        if not isinstance(aliases, dict):
+            return {}
+        return dict(aliases)
+
+    def get_device_alias(self, device_id):
+        """获取单个设备的别名，没有则返回空字符串。"""
+        if not device_id:
+            return ""
+        return self.get_device_aliases().get(device_id, "")
+
+    def set_device_alias(self, device_id, alias):
+        """设置/更新设备别名。alias 为空字符串则删除该映射。返回 True 表示有变化。"""
+        device_id = (device_id or "").strip()
+        alias = (alias or "").strip()
+        if not device_id:
+            return False
+        aliases = self.data.get("device_aliases", {})
+        if not isinstance(aliases, dict):
+            aliases = {}
+        if alias:
+            if aliases.get(device_id) == alias:
+                return False
+            aliases[device_id] = alias
+        else:
+            if device_id not in aliases:
+                return False
+            del aliases[device_id]
+        self.data["device_aliases"] = aliases
+        self.save_config()
+        return True
+
+    def delete_device_alias(self, device_id):
+        return self.set_device_alias(device_id, "")
+
+    def replace_device_aliases(self, mapping):
+        """整体替换别名映射，用于导入。会做基本类型校验。"""
+        if not isinstance(mapping, dict):
+            return False
+        cleaned = {}
+        for k, v in mapping.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue
+            k = k.strip()
+            v = v.strip()
+            if k and v:
+                cleaned[k] = v
+        self.data["device_aliases"] = cleaned
+        self.save_config()
+        return True
+
+    def merge_device_aliases(self, mapping):
+        """合并别名映射，相同 key 以传入的为准。返回新增/覆盖的条数。"""
+        if not isinstance(mapping, dict):
+            return 0
+        aliases = self.data.get("device_aliases", {})
+        if not isinstance(aliases, dict):
+            aliases = {}
+        changed = 0
+        for k, v in mapping.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue
+            k = k.strip()
+            v = v.strip()
+            if not k or not v:
+                continue
+            if aliases.get(k) != v:
+                aliases[k] = v
+                changed += 1
+        if changed:
+            self.data["device_aliases"] = aliases
+            self.save_config()
+        return changed
 
     def delete_app(self, name):
         apps = self.data.get("apps", [])

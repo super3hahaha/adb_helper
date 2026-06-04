@@ -1,4 +1,5 @@
 import os
+import json
 import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import tkinter.filedialog as filedialog
@@ -7,14 +8,16 @@ from ui.utils import optimize_combobox_width, attach_scrollable
 from core.file_helper import FileHelper
 
 class SettingsTab(ctk.CTkFrame):
-    def __init__(self, parent, adb_helper, config_manager, log_func, on_config_changed=None):
+    def __init__(self, parent, adb_helper, config_manager, log_func,
+                 on_config_changed=None, on_device_aliases_changed=None):
         super().__init__(parent, corner_radius=10)
         self.adb_helper = adb_helper
         self.config_manager = config_manager
         self.log = log_func
         self.on_config_changed = on_config_changed
+        self.on_device_aliases_changed = on_device_aliases_changed
         self.file_helper = FileHelper(config_manager)
-        
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -24,8 +27,39 @@ class SettingsTab(ctk.CTkFrame):
         # 滚动容器：窗口高度不足以容纳所有内容时自动显示滚动条
         self.scroll_container = attach_scrollable(self)
         self.scroll_container.grid(row=0, column=0, sticky="nsew")
-        container = self.scroll_container
+        outer = self.scroll_container
 
+        # 0. 分类下拉选择
+        self.category_var = ctk.StringVar(value="通用")
+        self.category_selector = ctk.CTkOptionMenu(
+            outer,
+            values=["通用", "设备管理"],
+            command=self.on_category_change,
+            variable=self.category_var,
+            corner_radius=8,
+            height=32,
+        )
+        self.category_selector.pack(pady=(10, 16), padx=10, fill="x")
+        optimize_combobox_width(self.category_selector, offset=200)
+
+        # 分类容器
+        self.container_general = ctk.CTkFrame(outer, fg_color="transparent")
+        self.container_devices = ctk.CTkFrame(outer, fg_color="transparent")
+
+        self._build_general_section(self.container_general)
+        self._build_device_alias_section(self.container_devices)
+
+        self.on_category_change(self.category_var.get())
+
+    def on_category_change(self, value):
+        if value == "通用":
+            self.container_devices.pack_forget()
+            self.container_general.pack(fill="both", expand=True)
+        elif value == "设备管理":
+            self.container_general.pack_forget()
+            self.container_devices.pack(fill="both", expand=True)
+
+    def _build_general_section(self, container):
         # 1. 全局路径设置
         frame_path = ctk.CTkFrame(container)
         frame_path.pack(pady=2, padx=10, fill="x")
@@ -84,7 +118,7 @@ class SettingsTab(ctk.CTkFrame):
         else:
             self.check_hide_global_log.deselect()
 
-        # 4. App 录入管理
+        # 3. App 录入管理
         frame_add = ctk.CTkFrame(container)
         frame_add.pack(pady=2, padx=10, fill="x")
 
@@ -111,7 +145,7 @@ class SettingsTab(ctk.CTkFrame):
         # 初始化 App 下拉列表
         self.refresh_app_name_combo()
 
-        # 5. Logcat 自定义过滤词管理
+        # 4. Logcat 自定义过滤词管理
         frame_filter = ctk.CTkFrame(container)
         frame_filter.pack(pady=2, padx=10, fill="x")
 
@@ -309,4 +343,288 @@ class SettingsTab(ctk.CTkFrame):
                     self.on_config_changed()
             else:
                 self.log(f"删除过滤词失败: {word}", "ERROR")
+
+    # ========== 设备别名管理 ==========
+    def _build_device_alias_section(self, container):
+        # 标题区
+        header_frame = ctk.CTkFrame(container, fg_color="transparent")
+        header_frame.pack(pady=(4, 0), padx=10, fill="x")
+        ctk.CTkLabel(header_frame, text="设备别名管理",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(header_frame,
+                     text="为设备序列号设置易识别的名称，将在顶部设备下拉框中显示",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(2, 0))
+
+        # 顶部操作按钮条
+        action_bar = ctk.CTkFrame(container, fg_color="transparent")
+        action_bar.pack(pady=(8, 6), padx=10, fill="x")
+
+        ctk.CTkButton(action_bar, text="+ 添加设备",
+                      command=self.action_add_device_alias,
+                      height=30, width=110).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(action_bar, text="刷新", command=self.refresh_device_alias_tree,
+                      height=30, width=70, fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#DCE4EE")).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(action_bar, text="导出", command=self.action_export_device_aliases,
+                      height=30, width=70, fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#DCE4EE")).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(action_bar, text="导入", command=self.action_import_device_aliases,
+                      height=30, width=70, fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#DCE4EE")).pack(side="right")
+
+        # 卡片列表容器（不再单独滚动，跟随外层 scroll_container）
+        self.alias_list_frame = ctk.CTkFrame(
+            container, fg_color=("gray92", "gray16"), corner_radius=8,
+        )
+        self.alias_list_frame.pack(padx=10, pady=(0, 8), fill="both", expand=True)
+
+        self.refresh_device_alias_tree()
+
+    def refresh_device_alias_tree(self):
+        """重建卡片列表。"""
+        if not hasattr(self, "alias_list_frame"):
+            return
+
+        # 清空旧卡片
+        for child in self.alias_list_frame.winfo_children():
+            child.destroy()
+
+        aliases = self.config_manager.get_device_aliases()
+        connected = set(self.adb_helper.get_connected_devices())
+
+        # 排序：在线 + 已命名优先，其次离线已命名，最后在线未命名
+        listed_ids = set(aliases.keys()) | connected
+        def sort_key(did):
+            is_connected = did in connected
+            has_alias = did in aliases
+            # (优先组, 名称)
+            group = 0 if (is_connected and has_alias) else (1 if has_alias else 2)
+            name = aliases.get(did, "").lower() if has_alias else did
+            return (group, name)
+
+        sorted_ids = sorted(listed_ids, key=sort_key)
+
+        if not sorted_ids:
+            empty = ctk.CTkLabel(
+                self.alias_list_frame,
+                text="暂无设备\n连接设备或点击"+'"+ 添加设备"' + "新增映射",
+                text_color="gray",
+                font=ctk.CTkFont(size=12),
+                justify="center",
+            )
+            empty.pack(pady=40)
+            return
+
+        for device_id in sorted_ids:
+            alias = aliases.get(device_id, "")
+            is_connected = device_id in connected
+            self._build_alias_card(self.alias_list_frame, device_id, alias, is_connected)
+
+    def _build_alias_card(self, parent, device_id, alias, is_connected):
+        """单个设备卡片。"""
+        card = ctk.CTkFrame(parent, fg_color=("white", "gray22"), corner_radius=6)
+        card.pack(fill="x", padx=4, pady=3)
+
+        # 主行：状态点 + 文本区 + 操作按钮
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=8)
+        row.grid_columnconfigure(1, weight=1)
+
+        # 状态圆点（用 Label 字符 ● 着色实现）
+        dot_color = "#2cc985" if is_connected else "#888888"
+        dot = ctk.CTkLabel(row, text="●", text_color=dot_color,
+                           font=ctk.CTkFont(size=14), width=16)
+        dot.grid(row=0, column=0, rowspan=2, padx=(0, 8), sticky="n", pady=(2, 0))
+
+        # 别名（大字）
+        alias_text = alias if alias else "(未命名)"
+        alias_color = None if alias else "gray"
+        lbl_alias = ctk.CTkLabel(
+            row, text=alias_text,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=alias_color or ("gray10", "#DCE4EE"),
+            anchor="w",
+        )
+        lbl_alias.grid(row=0, column=1, sticky="ew")
+
+        # 设备号（小字、灰色、等宽）
+        lbl_id = ctk.CTkLabel(
+            row, text=device_id,
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            text_color="gray", anchor="w",
+        )
+        lbl_id.grid(row=1, column=1, sticky="ew", pady=(1, 0))
+
+        # 状态文字（小字）
+        status_text = "已连接" if is_connected else "离线"
+        status_color = "#2cc985" if is_connected else "#888888"
+        lbl_status = ctk.CTkLabel(
+            row, text=status_text,
+            font=ctk.CTkFont(size=11),
+            text_color=status_color, anchor="e", width=50,
+        )
+        lbl_status.grid(row=0, column=2, padx=(8, 8), sticky="e")
+
+        # 操作按钮（编辑 / 删除）
+        btn_edit_text = "编辑" if alias else "命名"
+        ctk.CTkButton(
+            row, text=btn_edit_text,
+            command=lambda did=device_id: self._edit_device_alias(did),
+            width=56, height=26,
+        ).grid(row=0, column=3, padx=(0, 4), rowspan=2)
+
+        del_btn = ctk.CTkButton(
+            row, text="删除",
+            command=lambda did=device_id: self._delete_device_alias_by_id(did),
+            width=56, height=26,
+            fg_color="#c42b1c", hover_color="#8a1f15",
+            state="normal" if alias else "disabled",
+        )
+        del_btn.grid(row=0, column=4, rowspan=2)
+
+    def _prompt_alias_dialog(self, device_id_default="", alias_default="", lock_device_id=False):
+        """弹出输入对话框，返回 (device_id, alias) 或 None。lock_device_id=True 时设备号只读。"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("设备别名")
+        dialog.geometry("420x200")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="设备序列号:", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 2), padx=20, anchor="w")
+        entry_id = ctk.CTkEntry(dialog, width=380, font=ctk.CTkFont(family="Consolas"))
+        entry_id.pack(padx=20, fill="x")
+        entry_id.insert(0, device_id_default)
+        if lock_device_id:
+            entry_id.configure(state="disabled")
+
+        ctk.CTkLabel(dialog, text="别名:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 2), padx=20, anchor="w")
+        entry_alias = ctk.CTkEntry(dialog, width=380, placeholder_text="例如：测试机 A、Pixel 6 Pro")
+        entry_alias.pack(padx=20, fill="x")
+        entry_alias.insert(0, alias_default)
+        entry_alias.focus_set()
+        entry_alias.icursor("end")
+
+        result = {"value": None}
+
+        def on_ok():
+            did = entry_id.get().strip()
+            al = entry_alias.get().strip()
+            if not did or not al:
+                messagebox.showwarning("提示", "设备号和别名都不能为空", parent=dialog)
+                return
+            result["value"] = (did, al)
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=10, padx=20, fill="x")
+        ctk.CTkButton(btn_frame, text="确定", command=on_ok, width=80, height=26).pack(side="right", padx=(5, 0))
+        ctk.CTkButton(btn_frame, text="取消", command=on_cancel, width=80, height=26,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#DCE4EE")).pack(side="right")
+
+        dialog.bind("<Return>", lambda e: on_ok())
+        dialog.bind("<Escape>", lambda e: on_cancel())
+        self.wait_window(dialog)
+        return result["value"]
+
+    def action_add_device_alias(self):
+        """新增：从空白开始（如果有当前设备号则预填）。"""
+        device_id_default = self.adb_helper.current_device_id or ""
+        alias_default = self.config_manager.get_device_alias(device_id_default) if device_id_default else ""
+
+        result = self._prompt_alias_dialog(device_id_default, alias_default, lock_device_id=False)
+        if not result:
+            return
+        device_id, alias = result
+        self.config_manager.set_device_alias(device_id, alias)
+        self.log(f"已保存设备别名: {device_id} -> {alias}", "SUCCESS")
+        self.refresh_device_alias_tree()
+        if self.on_device_aliases_changed:
+            self.on_device_aliases_changed()
+
+    def _edit_device_alias(self, device_id):
+        """点击单个卡片的"编辑/命名"按钮。设备号锁定。"""
+        alias_default = self.config_manager.get_device_alias(device_id)
+        result = self._prompt_alias_dialog(device_id, alias_default, lock_device_id=True)
+        if not result:
+            return
+        _, alias = result
+        self.config_manager.set_device_alias(device_id, alias)
+        self.log(f"已保存设备别名: {device_id} -> {alias}", "SUCCESS")
+        self.refresh_device_alias_tree()
+        if self.on_device_aliases_changed:
+            self.on_device_aliases_changed()
+
+    def _delete_device_alias_by_id(self, device_id):
+        alias = self.config_manager.get_device_alias(device_id)
+        if not alias:
+            return
+        if messagebox.askyesno("删除确认", f"确定要删除别名 [{alias}] (设备 {device_id}) 吗？", parent=self):
+            self.config_manager.delete_device_alias(device_id)
+            self.log(f"已删除设备别名: {device_id}", "SUCCESS")
+            self.refresh_device_alias_tree()
+            if self.on_device_aliases_changed:
+                self.on_device_aliases_changed()
+
+    def action_export_device_aliases(self):
+        aliases = self.config_manager.get_device_aliases()
+        if not aliases:
+            messagebox.showinfo("提示", "暂无别名可导出", parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="导出设备别名",
+            defaultextension=".json",
+            initialfile="device_aliases.json",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(aliases, f, indent=4, ensure_ascii=False)
+            self.log(f"已导出 {len(aliases)} 条设备别名到: {path}", "SUCCESS")
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e), parent=self)
+            self.log(f"导出设备别名失败: {e}", "ERROR")
+
+    def action_import_device_aliases(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="导入设备别名",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("导入失败", f"无法解析 JSON 文件: {e}", parent=self)
+            return
+        if not isinstance(data, dict) or not data:
+            messagebox.showwarning("提示", "JSON 文件格式应为 {设备号: 别名} 的对象", parent=self)
+            return
+
+        choice = messagebox.askyesnocancel(
+            "导入方式",
+            "是：合并到现有列表（同设备号会被覆盖）\n否：替换全部现有别名\n取消：放弃导入",
+            parent=self,
+        )
+        if choice is None:
+            return
+        if choice:
+            count = self.config_manager.merge_device_aliases(data)
+            self.log(f"已合并设备别名，新增/更新 {count} 条", "SUCCESS")
+        else:
+            self.config_manager.replace_device_aliases(data)
+            self.log(f"已替换设备别名（共 {len(self.config_manager.get_device_aliases())} 条）", "SUCCESS")
+
+        self.refresh_device_alias_tree()
+        if self.on_device_aliases_changed:
+            self.on_device_aliases_changed()
 

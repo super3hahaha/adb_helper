@@ -18,8 +18,25 @@ class ADBHelper:
         self.recording_process = None
         self.log_queue = None
         self.current_device_id = None # 当前选中的设备序列号
+        # 由外部注入：device_id -> 别名 的解析函数（无则回退到序列号）
+        self.device_label_resolver = None
         # ADB 路径适配
         self.adb_cmd = PlatformUtils.get_adb_executable()
+
+    def _device_label_for_filename(self):
+        """返回用于文件名的设备标签：有别名优先用别名，否则用序列号。已做合法化处理。"""
+        if not self.current_device_id:
+            return ""
+        alias = ""
+        if self.device_label_resolver:
+            try:
+                alias = (self.device_label_resolver(self.current_device_id) or "").strip()
+            except Exception:
+                alias = ""
+        label = alias if alias else self.current_device_id
+        # 替换文件名非法字符和空白
+        label = re.sub(r'[\\/:*?"<>|\s]+', '_', label).strip('_')
+        return label
 
     def log(self, message, level="INFO"):
         if self.log_callback:
@@ -714,6 +731,10 @@ class ADBHelper:
         部分 app（如带 WRITE_SETTINGS 权限的铃声/视频类）会在启动时偷改
         系统的 ACCELEROMETER_ROTATION 开关。这里在启动前快照、启动后 2s
         异步还原，避免污染设备状态。
+
+        刚装完 APK 立即启动时，PackageManager 的 LAUNCHER intent 索引
+        可能还没建好，monkey 会以 Code 252 abort。这里失败时短暂等待
+        后重试一次，覆盖安装→自动启动的竞态。
         """
         if not package_name:
             return False, "Package name is empty"
@@ -721,7 +742,12 @@ class ADBHelper:
         device_id = self.current_device_id
         rotation_before = self._read_accelerometer_rotation(device_id) if device_id else None
 
-        result = self.execute_adb_command(["adb", "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"])
+        cmd = ["adb", "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"]
+        result = self.execute_adb_command(cmd)
+        if not result[0]:
+            time.sleep(0.8)
+            self.log(f"启动失败，重试中: {package_name}", "INFO")
+            result = self.execute_adb_command(cmd)
 
         if rotation_before is not None:
             threading.Thread(
@@ -1229,7 +1255,8 @@ class ADBHelper:
                 time.sleep(2)
 
                 remote_path = "/sdcard/screen_record_tmp.mp4"
-                device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
+                label = self._device_label_for_filename()
+                device_suffix = f"_{label}" if label else ""
                 local_filename = f"screenrecord_{int(time.time())}{device_suffix}.mp4"
                 local_path = os.path.join(temp_dir, local_filename)
 
@@ -1251,7 +1278,8 @@ class ADBHelper:
         def _thread():
             try:
                 remote_path = "/sdcard/screen.png"
-                device_suffix = f"_{self.current_device_id}" if self.current_device_id else ""
+                label = self._device_label_for_filename()
+                device_suffix = f"_{label}" if label else ""
 
                 # 文件名追加 "_可用宽dp x 可用高dp"，便于按屏幕尺寸归档。
                 # 查询走 _shell_silent，不污染日志；失败时退化为无后缀。
