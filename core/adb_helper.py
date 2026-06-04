@@ -682,10 +682,23 @@ class ADBHelper:
     def push_files(self, local_paths: list, remote_path: str):
         """推送多个文件或文件夹到设备"""
         self.check_device()  # 全局拦截校验，如果无设备会抛出 NoDeviceConnectedError
-        
+
         success_count = 0
         total_count = len(local_paths)
         errors = []
+
+        # 媒体库扫描入口随 Android 版本变：
+        # - API ≥ 29 (Android 10+)：content call --uri content://media --method scan_file
+        #   是 MediaProvider 的官方 call() 方法，返回 Result: Bundle[...]
+        # - API < 29 (Android 7-9)：MediaProvider 没实现 scan_file 这个 call() 方法，
+        #   命令返回 0、输出为空，看起来"成功"但实际是 no-op。必须用旧的
+        #   am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>
+        # 取一次 API 用于分流；拿不到时按旧版处理（更兼容）。
+        api_level_str = self._shell_silent(["shell", "getprop", "ro.build.version.sdk"]).strip()
+        try:
+            api_level = int(api_level_str)
+        except (ValueError, TypeError):
+            api_level = 0
 
         for local_path in local_paths:
             # 解决 adb 在 Windows 下处理带中文路径时，自动提取文件名可能导致截断的 Bug
@@ -728,17 +741,25 @@ class ADBHelper:
                 # scan_file 仅对单个文件生效；推送文件夹时用 find -exec 递归处理每个文件
                 scan_path = push_remote_path.replace("/sdcard/", "/storage/emulated/0/", 1)
                 safe_path = scan_path.replace("'", "'\\''")
+                # API ≥ 29 走 content call；API < 29 走 am broadcast。
+                # find -exec 跨这两个分支都用 sh -c 包一层 —— content call 直接拼
+                # `--arg {}` 在某些 toybox 下 OK，但 am broadcast 需要把路径拼进 file://<path>
+                # URI 里，substring 替换在不同 find 实现上不稳，统一用 sh -c "$0" 最保险。
+                if api_level >= 29:
+                    per_file = "content call --uri content://media --method scan_file --arg \"$0\""
+                else:
+                    per_file = "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d \"file://$0\""
                 if os.path.isdir(local_path):
                     shell_cmd = (
                         f"find '{safe_path}' -exec touch {{}} \\; ; "
-                        f"find '{safe_path}' -type f -exec "
-                        f"content call --uri content://media --method scan_file --arg {{}} \\;"
+                        f"find '{safe_path}' -type f -exec sh -c '{per_file}' {{}} \\;"
                     )
                 else:
-                    shell_cmd = (
-                        f"touch '{safe_path}' ; "
-                        f"content call --uri content://media --method scan_file --arg '{safe_path}'"
-                    )
+                    if api_level >= 29:
+                        scan_one = f"content call --uri content://media --method scan_file --arg '{safe_path}'"
+                    else:
+                        scan_one = f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{safe_path}'"
+                    shell_cmd = f"touch '{safe_path}' ; {scan_one}"
                 self.log(f"通知媒体库扫描: {display_name}...", "INFO")
                 scan_ok, _ = self.execute_adb_command(["adb", "shell", shell_cmd])
                 if scan_ok:

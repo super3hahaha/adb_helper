@@ -108,10 +108,16 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 
 排查"推了但文件管理器/媒体库没看到"时，**先看排序方式**：`adb push` 默认保留源文件的 mtime（源文件常常是几年前的），文件管理器按日期排序时新推的文件会沉底，看着像没生效。`push_files` 里 push 完会先 `touch` 把 mtime 改成设备当前时间再 scan，这样按日期排序的文件管理器/媒体库就能看到新文件排在前面。
 
+**Android 10 (API 29) 是分水岭**，`push_files` 按设备 API level 分流：
+- **API ≥ 29**：用 `content call --uri content://media --method scan_file --arg <path>`。MediaProvider 的官方 call() 方法，成功返回 `Result: Bundle[...]`。
+- **API < 29（Android 7-9）**：MediaProvider 没实现 `scan_file` 这个 call() 方法，命令返回 exit 0、输出**完全为空**，看着像"成功"但其实是 no-op，媒体库不会更新。必须用旧的 `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`。Note5/Android 7 实测验证：content call 静默吞掉，broadcast 才真触发。
+
 替代方案为什么都不用:
-- `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://...`：实测 Android 16 仍然能触发扫描，但 Android 7+ 对 `file://` URI 有限制、文档上不推荐，且和 `content call` 是单文件粒度同样的工作量。`content call` 既然在 11/16 都 work，没必要换。
+- `am broadcast` 全版本统一用：API ≥ 29 上虽然能触发，但 `MEDIA_SCANNER_SCAN_FILE` 自 Q 起官方标记为 deprecated 且 `file://` URI 有 StrictMode 限制，长期不可靠；`content call` 是新版的正路。
 - `cmd media scan <path>`：Android 16 上 `cmd: Can't find service: media`，没这个服务。
 - 按媒体后缀（jpg/mp4/...）过滤：没必要。能否入库由系统侧 MediaScanner 根据文件内容判断，对非媒体（如 .txt）调 `scan_file` 也是 no-op、无副作用。
+
+`find -exec` 调用 broadcast 时路径要拼进 `file://<path>` URI，跨 toybox/busybox 的 substring 替换不一定稳，统一用 `sh -c '... "$0"' {}` 把路径以 `$0` 传给 inner shell，引号控制权交回 shell 自己。
 
 ### `launch_app` 启动后会异步还原系统自动旋转开关
 
