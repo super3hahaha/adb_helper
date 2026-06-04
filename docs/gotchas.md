@@ -20,12 +20,14 @@
   - 左/右手势区宽度 = `frame.right - frame.left`
 - **Android 10 三星 / 部分厂商 ROM**：InsetsSource 名字又换了一套，不是 `ITYPE_*`，是 `TYPE_TOP_BAR` / `TYPE_SIDE_BAR_1` / `TYPE_TOP_TAPPABLE_ELEMENT` / `TYPE_BOTTOM_TAPPABLE_ELEMENT` / `TYPE_TOP_GESTURES` 等。**这类厂商私有常量名穷举不完**，不要试图列别名。
 - **Android 10 及更早**：用 `mStableInsets=Insets{left=L, top=T, right=R, bottom=B}` 或 `stableInsets=[L,T][R,B]`，是"insets 厚度"而不是 frame，直接 L/T/R/B 就是各方向占用。
+- **Android 7-9 三星等 ROM**：`BarController.StatusBar` 只有 `mState=...`，**没有 `mContentFrame=`** 字段；也没有 `mStableInsets`。但 `WINDOW MANAGER POLICY STATE` 段始终输出 AOSP 标准的 `mUnrestrictedScreen=(L,T) WxH` 和 `mStable=(L,T)-(R,B)`，两者差值就是各方向 inset 像素。例（Note5/Android 7）：`mUnrestrictedScreen=(0,0) 1440x2560` + `mStable=(0,84)-(1440,2560)` → 状态栏 84 px ≈ 24 dp@560dpi，导航栏 0（物理 Home 键）。**注意要用 `\bmUnrestrictedScreen=` 锚定**，否则会误匹配 Samsung 私有字段 `OriginalmUnrestrictedScreen=(0,0) 0x0`（这会把厚度算成 0）。
 
 **`adb_helper.get_screen_info()` 的解析顺序**：
 
 1. 先按 `InsetsSource(?:\s+id=<hex>)?\s+type=(?:ITYPE_STATUS_BAR|statusBars)\s+frame=...` 同时匹配 Android 11/12+ 标准 fmt
 2. 落空 → 退到 `BarController.StatusBar` / `BarController.NavigationBar` 的 `mContentFrame=Rect(L, T - R, B)`。这俩字段从 Android 7 一直存在到 10，跨厂商**比 InsetsSource type 名字稳得多**，三星魔改 Android 10 也照样有
 3. 再落空 → 退到极旧的 `mStableInsets=Insets{...}` 或 `stableInsets=[...]`
+4. 还落空 → 退到 `mUnrestrictedScreen` 与 `mStable` 的差值（Android 7-9 三星 ROM 兜底）
 
 新机型再出新 fmt，先 dump 一份原始输出再补正则；**别在 step 1 里硬列三星 / 小米 / 华为各自的 TYPE_* 别名，那条路无止境**。
 

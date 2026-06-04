@@ -408,6 +408,34 @@ class ADBHelper:
                 else:
                     info["side_gesture"] = "无"
 
+        # --- 回退 3：Android 7-9 三星等 ROM，BarController 只有 mState 没 mContentFrame，
+        # 也没有 mStableInsets 字段；但 PhoneWindowManager dump 一直输出 mUnrestrictedScreen
+        # 和 mStable，两者差值就是各方向 inset：
+        #   状态栏 px = mStable.top  - mUnrestrictedScreen.top
+        #   导航栏 px = mUnrestrictedScreen.bottom - mStable.bottom
+        #   左侧 px = mStable.left - mUnrestrictedScreen.left
+        #   右侧 px = mUnrestrictedScreen.right - mStable.right
+        # 例(Note5/Android 7)：mUnrestrictedScreen=(0,0) 1440x2560 + mStable=(0,84)-(1440,2560)
+        #   → 状态栏 84px ≈ 24 dp@560dpi，底部 0（物理 Home 键），左右 0。
+        # 注意：用 \b 防止匹配到 Samsung 私有的 OriginalmUnrestrictedScreen / mOriginalStable。
+        if info["status_bar"] == "未知" or info["nav_bar"] == "未知":
+            m_un = re.search(r"\bmUnrestrictedScreen=\((\d+),(\d+)\)\s+(\d+)x(\d+)", dw)
+            m_st = re.search(r"\bmStable=\((\d+),(\d+)\)-\((\d+),(\d+)\)", dw)
+            if m_un and m_st:
+                ul, ut, uw, uh = map(int, m_un.groups())
+                ur_, ub_ = ul + uw, ut + uh
+                sl, st_, sr_, sb_ = map(int, m_st.groups())
+                top_px = max(0, st_ - ut)
+                bot_px = max(0, ub_ - sb_)
+                left_px = max(0, sl - ul)
+                right_px = max(0, ur_ - sr_)
+                if info["status_bar"] == "未知":
+                    info["status_bar"] = f"{round(top_px * scale)} dp" if top_px > 0 else "无"
+                if info["nav_bar"] == "未知":
+                    info["nav_bar"] = f"{round(bot_px * scale)} dp" if bot_px > 0 else "无"
+                if left_px > 0 or right_px > 0:
+                    info["side_gesture"] = f"L {round(left_px*scale)} dp / R {round(right_px*scale)} dp"
+
         # --- Cutout：DisplayCutout{... insets=Rect(L, T - R, B) ... 或 safeInsets=...} ---
         m_cut = re.search(r"DisplayCutout\{([^}]*)\}", dw)
         if m_cut:
