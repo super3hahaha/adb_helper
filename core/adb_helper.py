@@ -11,6 +11,13 @@ class NoDeviceConnectedError(Exception):
     """当没有设备连接或未选择设备时抛出的异常"""
     pass
 
+
+def _device_sh_quote(s: str) -> str:
+    """把字符串包成可安全交给设备端 sh 的单引号字面量。
+    adb shell 会把多个 token 用空格拼成单条命令行交给设备 sh 解析，
+    路径里出现 ( ) 空格 ; & | * ? 等字符时必须由调用方自己引号化。"""
+    return "'" + s.replace("'", "'\\''") + "'"
+
 class ADBHelper:
     def __init__(self, log_callback=None):
         self.log_callback = log_callback
@@ -865,7 +872,7 @@ class ADBHelper:
     def list_device_files(self, remote_path: str):
         """获取设备文件列表"""
         self.check_device()
-        cmd = ["adb", "shell", "ls", "-lA", remote_path]
+        cmd = ["adb", "shell", "ls", "-lA", _device_sh_quote(remote_path)]
         success, output = self.execute_adb_command(cmd)
         if not success:
             return False, output
@@ -927,7 +934,7 @@ class ADBHelper:
     def delete_device_file(self, remote_path: str):
         """删除设备文件或文件夹"""
         self.check_device()
-        cmd = ["adb", "shell", "rm", "-rf", remote_path]
+        cmd = ["adb", "shell", "rm", "-rf", _device_sh_quote(remote_path)]
         return self.execute_adb_command(cmd)
 
     # --- Wireless Debugging Logic ---
