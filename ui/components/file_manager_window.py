@@ -7,6 +7,21 @@ try:
 except ImportError:
     CTkMessagebox = None
 
+def _format_size(raw) -> str:
+    """把字节数格式化成 KB/MB/GB，保留一位小数。<1KB 显示 B。"""
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    if n < 1024:
+        return f"{int(n)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        n /= 1024
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} PB"
+
+
 class DeviceFileManagerWindow(ctk.CTkToplevel):
     def __init__(self, parent, adb_helper, config_manager):
         super().__init__(parent)
@@ -175,14 +190,15 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
         if not files:
             self.tree.insert("", "end", values=("(空文件夹)", "-", "-", "-"))
         else:
-            # Sort: directories first, then files, both alphabetically
-            dirs = sorted([f for f in files if f['is_dir']], key=lambda x: x['name'].lower())
-            regular_files = sorted([f for f in files if not f['is_dir']], key=lambda x: x['name'].lower())
-            
+            # 默认排序：文件夹在上、文件在下，组内各自按修改时间倒序（最新在前）
+            # date 形如 "YYYY-MM-DD HH:MM"，字典序即时间序
+            dirs = sorted([f for f in files if f['is_dir']], key=lambda x: x.get('date', ''), reverse=True)
+            regular_files = sorted([f for f in files if not f['is_dir']], key=lambda x: x.get('date', ''), reverse=True)
+
             for f in dirs:
                 self.tree.insert("", "end", values=(f['name'], "文件夹", "-", f['date']))
             for f in regular_files:
-                self.tree.insert("", "end", values=(f['name'], "文件", f['size'], f['date']))
+                self.tree.insert("", "end", values=(f['name'], "文件", _format_size(f['size']), f['date']))
                 
         self.update_status(f"加载完成: {len(files)} 个项目")
 
