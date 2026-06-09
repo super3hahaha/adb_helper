@@ -119,6 +119,8 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 
 `find -exec` 调用 broadcast 时路径要拼进 `file://<path>` URI，跨 toybox/busybox 的 substring 替换不一定稳，统一用 `sh -c '... "$0"' {}` 把路径以 `$0` 传给 inner shell，引号控制权交回 shell 自己。
 
+**MediaScanner 不认的格式扫了也没用**：`content call scan_file` 返回 `Bundle[...]` 看着成功，但 Android 原生 MediaScanner 只识别一份固定的 MIME 白名单（mp3/aac/m4a/ogg/wav/flac 等），**`.ape` / `.dsf` / `.wv` 等小众无损格式不会入 `MediaStore.Audio`**，音乐 App 看不到。文件本身在设备上、Files app 能看到（进 `MediaStore.Downloads`），但任何按 Audio collection 查询的 App 都查不到。这不是代码 bug，是 Android 系统限制，没法修。Pixel 7 / Android 16 实测：`.ape` 推到 `/sdcard/Download/` 后音乐 App 看不到，同位置 mp3 正常显示。
+
 ### `launch_app` 启动后会异步还原系统自动旋转开关
 
 部分 app（铃声/视频/直播类常见）申请了 `WRITE_SETTINGS`，启动时会偷偷把 `Settings.System.ACCELEROMETER_ROTATION` 改成 1，每次 monkey 启动都会污染设备状态。
@@ -178,3 +180,19 @@ windows-latest runner 的默认 shell 是 **PowerShell 7**（`pwsh`），写 `MS
 ```
 
 Windows runner 自带 Git Bash，`shell: bash` 会走它，不需要额外装。
+
+### `adb shell` 的参数会被设备端 sh 重新解析，路径必须自己单引号化
+
+`subprocess.run([adb, "shell", "rm", "-rf", "/sdcard/foo (bar).mp3"])` 看起来是把路径当独立 argv 传，但 adb client 在发送到设备前会把所有 token 用空格拼成一条字符串，再交给设备端 `/system/bin/sh -c` 解析。结果就是 sh 看到的是：
+
+```
+rm -rf /sdcard/foo (bar).mp3
+```
+
+`( ) 空格 ; & | * ?` 全是 sh 元字符，直接报 `syntax error: unexpected '('`。
+
+**解决**：调用方自己负责单引号化。`core/adb_helper.py` 顶部有 `_device_sh_quote()`，所有把"用户路径"塞给 `adb shell` 的位置都要包一层（`delete_device_file`、`list_device_files` 已修）。注意：
+
+- `adb pull` / `adb push` 走 file-sync 协议，**不**经过设备 sh，原样传路径即可
+- 内部硬编码的 `/sdcard/screen.png`、`/sdcard/screen_record_tmp.mp4` 不含特殊字符，可以不引号化（但加上也没坏处）
+- 单引号转义就用 POSIX 套路 `'\''`，别用双引号（设备 sh 仍会展开 `$var` 和反引号）
