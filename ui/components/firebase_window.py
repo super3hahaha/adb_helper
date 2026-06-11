@@ -120,7 +120,7 @@ class FirebaseWindow(ctk.CTkToplevel):
                             
                             # 提取 name 和 content_type
                             name_match = re.search(r'name=([^,\s]+)', line)
-                            content_type_match = re.search(r'content_type=([^,\s\}]+)', line)
+                            content_type_match = re.search(r'content_type=([^,\}]+)', line)
                             
                             if name_match:
                                 dehydrated_parts = []
@@ -130,7 +130,7 @@ class FirebaseWindow(ctk.CTkToplevel):
                                 params = []
                                 params.append(f"{name_match.group(1)}")
                                 if content_type_match:
-                                    params.append(f"{content_type_match.group(1)}")
+                                    params.append(content_type_match.group(1).strip())
                                 
                                 if params:
                                     dehydrated_parts.append(" >> ".join(params))
