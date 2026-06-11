@@ -178,7 +178,8 @@ class UpdateFlow:
         self._close_progress()
         self.log(f"更新包已下载: {save_path}", "SUCCESS")
 
-        if PlatformUtils.get_os_type() != "win":
+        os_type = PlatformUtils.get_os_type()
+        if os_type not in ("win", "mac"):
             messagebox.showinfo(
                 "下载完成",
                 f"已下载到：\n{save_path}\n\n"
@@ -205,13 +206,16 @@ class UpdateFlow:
             return
 
         try:
-            self.updater.apply_update_windows(save_path)
+            if os_type == "win":
+                self.updater.apply_update_windows(save_path)
+            else:
+                self.updater.apply_update_mac(save_path)
         except Exception as e:
             self.log(f"启动更新脚本失败: {e}", "ERROR")
             messagebox.showerror("更新失败", f"启动更新脚本失败：\n{e}", parent=self.parent)
             return
 
-        # 让 bat 脚本接管后续流程：关闭主程序
+        # 让外部脚本（bat/sh）接管后续流程：关闭主程序
         self.parent.after(500, self._quit_app)
 
     def _after_download_error(self, msg):

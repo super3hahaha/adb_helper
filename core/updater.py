@@ -4,7 +4,7 @@
 
 职责划分：
 - `parse_version` / `is_newer`：纯函数，做语义化版本号比较。
-- `Updater`：封装 GitHub Releases 查询、资源包下载、Windows 下的替换重启。
+- `Updater`：封装 GitHub Releases 查询、资源包下载、Windows / macOS 下的替换重启。
   所有网络请求都在后台线程跑，通过回调与 UI 交互，本模块不直接触碰 UI。
 """
 
@@ -278,4 +278,95 @@ class Updater:
             ["cmd", "/c", bat_path],
             creationflags=CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
+        )
+
+    # ---------- 应用更新（macOS） ----------
+    def apply_update_mac(self, new_zip_path):
+        """
+        生成临时 sh：等当前进程退出 → 解压 zip → 替换 .app → 清除隔离属性 → 重启 → 自删除。
+        调用方应在此方法返回后立即退出主程序（sh 会轮询等待当前 PID 消失）。
+        仅在打包后（sys.frozen）有效；开发模式会抛异常，由上层转给 UI 提示。
+
+        macOS 资源包形如 ADBHelper-macOS-vX.Y.Z.zip，解压后得到 ADBHelper.app。
+        """
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError(
+                "当前处于开发模式（非打包运行），无法自动替换。\n"
+                f"更新包已下载至：{new_zip_path}"
+            )
+
+        # sys.executable 形如 /path/ADBHelper.app/Contents/MacOS/ADBHelper，
+        # 向上回溯定位 .app 包根目录。
+        exe = os.path.realpath(sys.executable)
+        app_path = exe
+        while app_path and not app_path.endswith(".app"):
+            parent = os.path.dirname(app_path)
+            if parent == app_path:
+                break
+            app_path = parent
+        if not app_path.endswith(".app") or not os.path.isdir(app_path):
+            raise RuntimeError(
+                "无法定位当前 .app 包路径，无法自动替换。\n"
+                f"更新包已下载至：{new_zip_path}"
+            )
+
+        app_dir = os.path.dirname(app_path)
+        if not os.access(app_dir, os.W_OK):
+            raise RuntimeError(
+                f"当前安装目录无写入权限：{app_dir}\n"
+                "请把 App 移动到有权限的位置（如「应用程序」需管理员），"
+                f"或手动解压安装：{new_zip_path}"
+            )
+
+        pid = os.getpid()
+        extract_dir = os.path.join(tempfile.gettempdir(), "adb_helper_update_extract")
+        sh_path = os.path.join(tempfile.gettempdir(), "adb_helper_update.sh")
+        log_path = os.path.join(tempfile.gettempdir(), "adb_helper_update.log")
+
+        # 所有输出重定向到 log，便于失败后排查。变量统一双引号包裹以容忍路径空格。
+        sh = f"""#!/bin/bash
+exec > "{log_path}" 2>&1
+echo "[START] $(date)"
+PID="{pid}"
+echo "Waiting for pid $PID to exit..."
+for _ in $(seq 1 600); do
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.5
+done
+echo "Unzipping..."
+rm -rf "{extract_dir}"
+mkdir -p "{extract_dir}"
+if ! unzip -oq "{new_zip_path}" -d "{extract_dir}"; then
+    echo "[FAIL] unzip failed"
+    exit 1
+fi
+NEW_APP=$(find "{extract_dir}" -maxdepth 2 -name "*.app" -type d | head -n 1)
+if [ -z "$NEW_APP" ] || [ ! -d "$NEW_APP" ]; then
+    echo "[FAIL] new .app not found in archive"
+    exit 1
+fi
+echo "Replacing $NEW_APP -> {app_path}"
+rm -rf "{app_path}"
+if ! ditto "$NEW_APP" "{app_path}"; then
+    echo "[FAIL] ditto failed"
+    exit 1
+fi
+echo "Clearing quarantine attribute..."
+xattr -dr com.apple.quarantine "{app_path}" 2>/dev/null
+echo "Relaunching..."
+open "{app_path}"
+echo "[DONE] $(date)"
+rm -rf "{extract_dir}"
+rm -f "{new_zip_path}"
+rm -f "$0"
+"""
+        with open(sh_path, "w", encoding="utf-8") as f:
+            f.write(sh)
+        os.chmod(sh_path, 0o755)
+
+        # start_new_session=True：脱离父进程会话，主程序退出后脚本仍能继续跑。
+        subprocess.Popen(
+            ["/bin/bash", sh_path],
+            close_fds=True,
+            start_new_session=True,
         )
