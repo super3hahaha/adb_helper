@@ -1,5 +1,7 @@
 customtkinter
 Pillow
-tkinterdnd2
+# 0.5.0 的 macOS arm64 只带 Tcl 9 版 tkdnd(libtcl9tkdnd*.dylib),在 Tk 8.6 下报
+# "incompatible stubs mechanism" 崩溃。0.4.2 仍带 Tcl 8.6 兼容的 libtkdnd2.9.3.dylib。
+tkinterdnd2==0.4.2
 requests
 pywin32; sys_platform == 'win32'

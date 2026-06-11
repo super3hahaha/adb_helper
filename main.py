@@ -65,6 +65,19 @@ if getattr(sys, 'frozen', False):
 # 确保项目根目录在 sys.path 中
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# --- Tcl/Tk 库路径修复 (macOS + uv/standalone Python) ---
+# uv 装的 standalone CPython 在 venv 里运行时, tkinter 解析 Tcl 库目录会失败
+# (报 "Can't find a usable init.tcl"), 因为它按 venv 前缀去找而库实际在 base 解释器下。
+# 这里在导入 tkinter 之前, 按 base_prefix 显式指向 tcl8.6/tk8.6。
+# 仅在源码运行(非 PyInstaller 打包)且目录确实存在时设置, 不影响 Windows 与打包版。
+if sys.platform == "darwin" and not getattr(sys, "frozen", False):
+    _tcl_dir = os.path.join(sys.base_prefix, "lib", "tcl8.6")
+    _tk_dir = os.path.join(sys.base_prefix, "lib", "tk8.6")
+    if "TCL_LIBRARY" not in os.environ and os.path.isdir(_tcl_dir):
+        os.environ["TCL_LIBRARY"] = _tcl_dir
+    if "TK_LIBRARY" not in os.environ and os.path.isdir(_tk_dir):
+        os.environ["TK_LIBRARY"] = _tk_dir
+
 from core.platform_utils import PlatformUtils
 # 在初始化任何 GUI 组件之前配置 DPI
 PlatformUtils.setup_dpi_awareness()
