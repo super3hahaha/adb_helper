@@ -102,22 +102,28 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 
 不传 `--bit-rate` 时 Android 用 20 Mbps，1 分钟 ≈ 150 MB。UI 录屏内容（纯色/文字）压缩效率极高，4 Mbps 肉眼无差、2 Mbps 仍清晰。`start_recording(bit_rate=...)` 默认 4 Mbps，约 30 MB/分钟。参数单位是 bps，传 `int`。
 
-### `content call ... scan_file` 不递归，传文件夹用 `find -exec`
+### 媒体扫描全版本统一用 `am broadcast`，别用 `content call scan_file`
 
-`content call --uri content://media --method scan_file --arg <path>` 只接受**单个文件路径**，传目录是 no-op，里面的文件不会进媒体库。`push_files` 推完一个文件夹后用 `adb shell find '<dir>' -type f -exec content call ... --arg {} \;`，一条命令把所有文件扫掉。实测 Android 11 / Android 16 toybox 的 `find -exec` + `\;` 转义都工作正常，每个文件都会单独触发 `content call` 并返回 `Result: Bundle[...]`，MediaStore 入库可用 `content query --uri content://media/external/audio/media --where "_data='<path>'"` 验证。
+`push_files` 推完文件后触发媒体扫描，**所有 API 版本都只用** `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`。这条 intent 自 Android Q 起官方标记 deprecated，但实测它才是跨版本最可靠的——`content call scan_file` 反而到处坏：
 
-排查"推了但文件管理器/媒体库没看到"时，**先看排序方式**：`adb push` 默认保留源文件的 mtime（源文件常常是几年前的），文件管理器按日期排序时新推的文件会沉底，看着像没生效。`push_files` 里 push 完会先 `touch` 把 mtime 改成设备当前时间再 scan，这样按日期排序的文件管理器/媒体库就能看到新文件排在前面。
+| 方法 | 三星 Note9 / A10 | Pixel 4 / A13 | A7-9 |
+|---|---|---|---|
+| `content call scan_file` | 静默 no-op（零输出、不入库） | **每次必抛 NPE** `Uri.getPath() on null` | 没实现该 call() 方法 |
+| `am broadcast MEDIA_SCANNER_SCAN_FILE` | 正常触发 | 正常，且实测真写进 MediaStore.Audio | 正常 |
 
-**Android 10 (API 29) 是分水岭**，`push_files` 按设备 API level 分流：
-- **API ≥ 29**：用 `content call --uri content://media --method scan_file --arg <path>`。MediaProvider 的官方 call() 方法，成功返回 `Result: Bundle[...]`。
-- **API < 29（Android 7-9）**：MediaProvider 没实现 `scan_file` 这个 call() 方法，命令返回 exit 0、输出**完全为空**，看着像"成功"但其实是 no-op，媒体库不会更新。必须用旧的 `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`。Note5/Android 7 实测验证：content call 静默吞掉，broadcast 才真触发。
+- **三星 Note9 / Android 10 (One UI 2)** 实测：导入 20 个 mp3，per-file `content call scan_file` **全程零 stdout**（正常设备每个文件应回 `Result: Bundle[...]`），文件进了设备但音乐 App/媒体库看不到。这就是"导入后没通知媒体库刷新"的根因。
+- **Pixel 4 / Android 13** 实测：`content call ... scan_file --arg <path>` 无论路径在 Download 根还是子目录、无论加不加引号，**每次都抛** `java.lang.NullPointerException: ...Uri.getPath() on a null object reference`。同一文件用 broadcast 则正常，`content query --uri content://media/external/audio/media --where "_data='<path>'"` 能查到新插入的行。
+- **Android 7-9**：MediaProvider 压根没实现 `scan_file` 这个 call() 方法，命令 exit 0、输出全空，no-op。
 
-替代方案为什么都不用:
-- `am broadcast` 全版本统一用：API ≥ 29 上虽然能触发，但 `MEDIA_SCANNER_SCAN_FILE` 自 Q 起官方标记为 deprecated 且 `file://` URI 有 StrictMode 限制，长期不可靠；`content call` 是新版的正路。
+为什么 broadcast 的"deprecated + file:// StrictMode 不可靠"担忧不成立：`file://` 的 StrictMode 限制是 `FileUriExposedException`，**只管 app 进程内**通过 Intent 暴露 file URI 的场景；从 adb shell 直接发 broadcast 不经过任何 app 的 VmPolicy，所以 `file://` URI 在 shell 端一直能用。Pixel A13 实测 `Broadcast completed: result=0` 且文件真入库。
+
+排查"推了但文件管理器/媒体库没看到"时，**先看排序方式**：`adb push` 默认保留源文件的 mtime（常是几年前），文件管理器按日期排序时新推的文件会沉底，看着像没生效。`push_files` push 完会先 `touch` 把 mtime 改成设备当前时间再 scan，按日期排序就能看到新文件排在前面。
+
+`scan_file` 只接受**单个文件路径**，传目录是 no-op。推文件夹时用 `find '<dir>' -type f -exec sh -c '...' {} \;` 逐个文件触发。路径要拼进 `file://<path>` URI，跨 toybox/busybox 的 substring 替换不一定稳，统一用 `sh -c '... "$0"' {}` 把路径以 `$0` 传给 inner shell，引号控制权交回 shell 自己。实测 Android 11/13/16 toybox 的 `find -exec` + `\;` 转义都正常。
+
+其他替代方案为什么不用：
 - `cmd media scan <path>`：Android 16 上 `cmd: Can't find service: media`，没这个服务。
-- 按媒体后缀（jpg/mp4/...）过滤：没必要。能否入库由系统侧 MediaScanner 根据文件内容判断，对非媒体（如 .txt）调 `scan_file` 也是 no-op、无副作用。
-
-`find -exec` 调用 broadcast 时路径要拼进 `file://<path>` URI，跨 toybox/busybox 的 substring 替换不一定稳，统一用 `sh -c '... "$0"' {}` 把路径以 `$0` 传给 inner shell，引号控制权交回 shell 自己。
+- 按媒体后缀（jpg/mp4/...）过滤再扫：没必要。能否入库由系统侧 MediaScanner 按文件内容判断，对非媒体（如 .txt）调扫描也是 no-op、无副作用。
 
 **MediaScanner 不认的格式扫了也没用**：`content call scan_file` 返回 `Bundle[...]` 看着成功，但 Android 原生 MediaScanner 只识别一份固定的 MIME 白名单（mp3/aac/m4a/ogg/wav/flac 等），**`.ape` / `.dsf` / `.wv` 等小众无损格式不会入 `MediaStore.Audio`**，音乐 App 看不到。文件本身在设备上、Files app 能看到（进 `MediaStore.Downloads`），但任何按 Audio collection 查询的 App 都查不到。这不是代码 bug，是 Android 系统限制，没法修。Pixel 7 / Android 16 实测：`.ape` 推到 `/sdcard/Download/` 后音乐 App 看不到，同位置 mp3 正常显示。
 
@@ -196,3 +202,22 @@ rm -rf /sdcard/foo (bar).mp3
 - `adb pull` / `adb push` 走 file-sync 协议，**不**经过设备 sh，原样传路径即可
 - 内部硬编码的 `/sdcard/screen.png`、`/sdcard/screen_record_tmp.mp4` 不含特殊字符，可以不引号化（但加上也没坏处）
 - 单引号转义就用 POSIX 套路 `'\''`，别用双引号（设备 sh 仍会展开 `$var` 和反引号）
+
+### ADB 同步调用必须加 timeout，且耗时操作不能放主线程
+
+Tkinter 单线程，UI 只能在主线程更新。`subprocess.run(adb ...)` 在设备休眠 / 未授权（等手机弹窗）/ USB 异常 / adb daemon 冷启动时会**长时间甚至无限阻塞**，直接冻住整个窗口——表现为「页面加载偶尔很慢」。
+
+两条防线缺一不可：
+
+1. **加 timeout**：`PlatformUtils.get_subprocess_kwargs(timeout=...)` 支持传秒数；`adb_helper.py` 里 `execute_adb_command` / `get_connected_devices` / `_shell_silent` 已分别用 `SHELL_TIMEOUT=20` / `DEVICES_TIMEOUT=10` 并捕获 `subprocess.TimeoutExpired`。新增同步 adb 调用记得照做，否则会有线程永久挂着。
+2. **耗时调用放子线程**：`main_window.refresh_device_list` 已改为「子线程跑 `adb devices` → `self.after(0, self._apply_device_list)` 回主线程更新控件」。子线程里**绝不能碰任何控件**。回调里要 `winfo_exists()` 判窗口是否已关，并用 `_refreshing_devices` 标志防连点并发。
+
+光做 1 不做 2：UI 仍会冻那几秒。光做 2 不做 1：卡死的线程没人回收，越积越多。
+
+### CTkScrollableFrame 的 fit 防抖会导致切换 tab 时首屏宽度"抖一下"
+
+`ui/utils.py` 的 `attach_scrollable` 给 `_fit_frame_dimensions_to_canvas`（把内层 frame 宽度对齐到 canvas）加了 80ms 防抖，目的是解决拖动窗口 resize 时嵌套圆角 frame 重绘卡顿。副作用：tab 第一次显示时，内层 frame 先以"请求宽度"渲染，80ms 后才 snap 到 canvas 真实宽度，肉眼可见地抖一下。
+
+**解决**：给 canvas 额外绑 `<Map>`，在 tab 被 grid 显示的瞬间用 `after_idle` 立即 fit（并取消排队中的防抖）。`<Map>` 只在显示/切换 tab 时触发、拖动 resize 不触发，所以既消掉首屏抖动，又保留 resize 防抖。`<Configure>` 仍走防抖，不要去掉。
+
+注意：`_fit_frame_dimensions_to_canvas(event)` 内部只读 `canvas.winfo_width()`，不使用 event 坐标，所以把 `<Map>` 的 event 传进去没问题。

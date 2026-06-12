@@ -66,8 +66,13 @@ class ADBHelper:
                     on_complete()
         threading.Thread(target=_wrapper, daemon=True).start()
 
-    def _get_subprocess_kwargs(self, capture_output=True, text=True):
-        return PlatformUtils.get_subprocess_kwargs(capture_output, text)
+    # 默认超时（秒）。设备休眠/未授权/USB 异常时，adb 可能永久阻塞，
+    # 加超时保证同步调用一定会在有限时间内返回（或报超时）。
+    DEVICES_TIMEOUT = 10   # adb devices：含冷启动 daemon 的余量
+    SHELL_TIMEOUT = 20     # 普通 shell/命令
+
+    def _get_subprocess_kwargs(self, capture_output=True, text=True, timeout=None):
+        return PlatformUtils.get_subprocess_kwargs(capture_output, text, timeout)
 
     def execute_adb_command(self, cmd_list, check_dev=True):
         """执行 ADB 命令并处理输出 (核心函数)"""
@@ -99,7 +104,7 @@ class ADBHelper:
             # 执行命令
             result = subprocess.run(
                 cmd_list,
-                **self._get_subprocess_kwargs()
+                **self._get_subprocess_kwargs(timeout=self.SHELL_TIMEOUT)
             )
 
             # 处理输出
@@ -120,6 +125,9 @@ class ADBHelper:
                     self.log("提示: 请检查 USB 连接及调试模式。", "ERROR")
                 return False, error_msg
 
+        except subprocess.TimeoutExpired:
+            self.log(f"命令超时 ({self.SHELL_TIMEOUT}s)，设备可能休眠/未授权或 USB 异常。", "ERROR")
+            return False, "命令执行超时"
         except FileNotFoundError:
             self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
             return False, "未找到 adb 命令"
@@ -134,9 +142,9 @@ class ADBHelper:
         try:
             result = subprocess.run(
                 [self.adb_cmd, "devices"],
-                **self._get_subprocess_kwargs()
+                **self._get_subprocess_kwargs(timeout=self.DEVICES_TIMEOUT)
             )
-            
+
             devices = []
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
@@ -146,6 +154,9 @@ class ADBHelper:
                         if len(parts) >= 2 and parts[1] == "device":
                             devices.append(parts[0])
             return devices
+        except subprocess.TimeoutExpired:
+            self.log(f"获取设备列表超时 ({self.DEVICES_TIMEOUT}s)，请检查 adb / USB 连接。", "ERROR")
+            return []
         except Exception as e:
             self.log(f"获取设备列表失败: {e}", "ERROR")
             return []
@@ -208,8 +219,11 @@ class ADBHelper:
             return ""
         cmd = [self.adb_cmd, "-s", self.current_device_id] + list(args)
         try:
-            result = subprocess.run(cmd, **self._get_subprocess_kwargs())
+            result = subprocess.run(cmd, **self._get_subprocess_kwargs(timeout=self.SHELL_TIMEOUT))
             return (result.stdout or "").strip()
+        except subprocess.TimeoutExpired:
+            self.log(f"静默 ADB 查询超时 ({self.SHELL_TIMEOUT}s)。", "ERROR")
+            return ""
         except Exception as e:
             self.log(f"静默 ADB 查询失败: {e}", "ERROR")
             return ""
@@ -694,19 +708,6 @@ class ADBHelper:
         total_count = len(local_paths)
         errors = []
 
-        # 媒体库扫描入口随 Android 版本变：
-        # - API ≥ 29 (Android 10+)：content call --uri content://media --method scan_file
-        #   是 MediaProvider 的官方 call() 方法，返回 Result: Bundle[...]
-        # - API < 29 (Android 7-9)：MediaProvider 没实现 scan_file 这个 call() 方法，
-        #   命令返回 0、输出为空，看起来"成功"但实际是 no-op。必须用旧的
-        #   am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>
-        # 取一次 API 用于分流；拿不到时按旧版处理（更兼容）。
-        api_level_str = self._shell_silent(["shell", "getprop", "ro.build.version.sdk"]).strip()
-        try:
-            api_level = int(api_level_str)
-        except (ValueError, TypeError):
-            api_level = 0
-
         for local_path in local_paths:
             # 解决 adb 在 Windows 下处理带中文路径时，自动提取文件名可能导致截断的 Bug
             # 如果远端路径明确是目录（以 / 结尾），我们手动补全远端文件或文件夹名
@@ -745,27 +746,31 @@ class ADBHelper:
                 # 1) touch 把 mtime 改为设备当前时间——adb push 默认保留源文件 mtime,
                 #    源文件常是几年前的，文件管理器按日期排序时新推的文件会沉底，看着像"没传上"
                 # 2) 触发媒体扫描，让文件立即在相册/媒体库中可见
-                # scan_file 仅对单个文件生效；推送文件夹时用 find -exec 递归处理每个文件
+                #
+                # 扫描统一用 am broadcast MEDIA_SCANNER_SCAN_FILE，全 API 版本一条路。
+                # 这条 intent 自 Android Q 起官方标记 deprecated，但实测它才是跨版本最可靠的：
+                # - 三星 Android 10 (One UI 2)：content call scan_file 被 MediaProvider 当
+                #   no-op 静默吞掉（Note9 实测：20 文件全程零 stdout、文件在设备上但不入 MediaStore），
+                #   broadcast 才真正触发扫描。
+                # - Pixel / Android 13：content call scan_file 必抛 NPE
+                #   (Uri.getPath() on null)，broadcast 正常且实测能把文件真正写进 MediaStore.Audio。
+                # - Android 7-9：MediaProvider 压根没实现 scan_file 这个 call() 方法，只能 broadcast。
+                # 从 shell 发 broadcast 不受 app 内 file:// StrictMode 限制（那是
+                # FileUriExposedException，只管进程内），所以 file:// URI 在 shell 端始终可用。
+                #
+                # scan_file 仅对单个文件生效；推送文件夹时用 find -exec 逐个文件触发。
+                # find -exec 用 sh -c 包一层，把路径以 $0 传给 inner shell——直接 substring
+                # 替换 file://<path> 在不同 toybox/busybox 的 find 实现上不稳，交回 shell 引号最保险。
                 scan_path = push_remote_path.replace("/sdcard/", "/storage/emulated/0/", 1)
                 safe_path = scan_path.replace("'", "'\\''")
-                # API ≥ 29 走 content call；API < 29 走 am broadcast。
-                # find -exec 跨这两个分支都用 sh -c 包一层 —— content call 直接拼
-                # `--arg {}` 在某些 toybox 下 OK，但 am broadcast 需要把路径拼进 file://<path>
-                # URI 里，substring 替换在不同 find 实现上不稳，统一用 sh -c "$0" 最保险。
-                if api_level >= 29:
-                    per_file = "content call --uri content://media --method scan_file --arg \"$0\""
-                else:
-                    per_file = "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d \"file://$0\""
                 if os.path.isdir(local_path):
+                    per_file = "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d \"file://$0\""
                     shell_cmd = (
                         f"find '{safe_path}' -exec touch {{}} \\; ; "
                         f"find '{safe_path}' -type f -exec sh -c '{per_file}' {{}} \\;"
                     )
                 else:
-                    if api_level >= 29:
-                        scan_one = f"content call --uri content://media --method scan_file --arg '{safe_path}'"
-                    else:
-                        scan_one = f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{safe_path}'"
+                    scan_one = f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{safe_path}'"
                     shell_cmd = f"touch '{safe_path}' ; {scan_one}"
                 self.log(f"通知媒体库扫描: {display_name}...", "INFO")
                 scan_ok, _ = self.execute_adb_command(["adb", "shell", shell_cmd])

@@ -54,8 +54,21 @@ def _install_scrollable_optimizations(sf, delay_ms=80):
             except Exception: pass
         pending["fit"] = sf.after(delay_ms, lambda e=event: _do_fit(e))
 
+    def _on_canvas_map(event):
+        # tab 被显示（grid 进来）的瞬间立即把内层 frame 宽度 snap 到 canvas，
+        # 否则它会先以"请求宽度"出现、80ms 防抖后才对齐，肉眼可见地"抖一下"。
+        # <Map> 只在显示/切换 tab 时触发，拖动窗口 resize 不触发，
+        # 所以不会把 resize 的防卡顿效果破坏掉。
+        if pending["fit"] is not None:
+            try: sf.after_cancel(pending["fit"])
+            except Exception: pass
+            pending["fit"] = None
+        # after_idle 确保在本轮几何计算完成后再 fit，此时 canvas 宽度已是最终值
+        sf.after_idle(lambda: _do_fit(event))
+
     sf.bind("<Configure>", _on_inner_configure)
     canvas.bind("<Configure>", _on_canvas_configure)
+    canvas.bind("<Map>", _on_canvas_map)
 
 
 def optimize_combobox_width(combo, offset=120):

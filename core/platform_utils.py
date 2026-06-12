@@ -78,11 +78,17 @@ class PlatformUtils:
         return path
 
     @staticmethod
-    def get_subprocess_kwargs(capture_output=True, text=True):
-        """获取跨平台的 subprocess 参数，处理编码和无窗口执行"""
+    def get_subprocess_kwargs(capture_output=True, text=True, timeout=None):
+        """获取跨平台的 subprocess 参数，处理编码和无窗口执行
+
+        timeout: 秒。传入后 subprocess.run 超时会抛 subprocess.TimeoutExpired，
+        调用方需自行捕获。用于防止 adb 在设备休眠/未授权/USB 异常时无限阻塞 UI。
+        """
         kwargs = {}
         if capture_output:
             kwargs['capture_output'] = True
+        if timeout is not None:
+            kwargs['timeout'] = timeout
         if text:
             kwargs['text'] = True
             # ADB 输出 UTF-8，但 Windows 系统错误消息是 GBK

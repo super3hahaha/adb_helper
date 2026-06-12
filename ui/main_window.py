@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import sys
+import threading
 from datetime import datetime
 import tkinter as tk
 
@@ -166,9 +167,39 @@ class MainWindow(TkinterDnD_CTk):
         return device_id
 
     def refresh_device_list(self):
-        """刷新设备列表"""
+        """刷新设备列表（在子线程执行 adb devices，避免阻塞 UI）。
+
+        adb devices 可能因冷启动 daemon / 设备异常而耗时数秒，放主线程会冻住窗口。
+        这里在子线程取设备列表，再用 after(0) 切回主线程更新控件（Tkinter 只能主线程改 UI）。
+        """
+        # 防止连点刷新时多个线程并发
+        if getattr(self, "_refreshing_devices", False):
+            return
+        self._refreshing_devices = True
+
         self.log_message("正在刷新设备列表...", "INFO")
-        devices = self.adb_helper.get_connected_devices()
+        try:
+            self.btn_refresh_devices.configure(state="disabled")
+        except Exception:
+            pass
+
+        def _worker():
+            devices = self.adb_helper.get_connected_devices()
+            # 切回主线程更新 UI
+            self.after(0, lambda: self._apply_device_list(devices))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_device_list(self, devices):
+        """在主线程根据子线程取回的设备列表更新下拉框等控件。"""
+        self._refreshing_devices = False
+        # 窗口可能已关闭
+        if not self.winfo_exists():
+            return
+        try:
+            self.btn_refresh_devices.configure(state="normal")
+        except Exception:
+            pass
 
         if not devices:
             self._device_display_map = {}
