@@ -252,11 +252,12 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
             name = values[0]
             if name.startswith("(空文件夹)") or name.startswith("目录 ") or name.startswith("加载失败:"):
                 continue
-            remote_paths.append(self.current_path + name)
-            
+            is_dir = (len(values) > 1 and values[1] == "文件夹")
+            remote_paths.append((self.current_path + name, is_dir))
+
         if not remote_paths:
             return
-            
+
         if CTkMessagebox:
             msg = CTkMessagebox(title="危险操作确认", message=f"确定要删除选中的 {len(remote_paths)} 个项目吗？\n此操作不可恢复！",
                                 icon="warning", option_1="取消", option_2="删除", parent=self)
@@ -272,8 +273,8 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
         
         def _delete():
             success_count = 0
-            for path in remote_paths:
-                success, _ = self.adb_helper.delete_device_file(path)
+            for path, is_dir in remote_paths:
+                success, _ = self.adb_helper.delete_device_file(path, is_dir=is_dir)
                 if success:
                     success_count += 1
             self.after(0, self._on_delete_complete, success_count, len(remote_paths))

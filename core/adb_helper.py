@@ -936,11 +936,62 @@ class ADBHelper:
         else:
             return False, f"Pulled {success_count}/{total_count} items. Errors: {'; '.join(errors)}"
 
-    def delete_device_file(self, remote_path: str):
-        """删除设备文件或文件夹"""
+    def delete_device_file(self, remote_path: str, is_dir: bool = False):
+        """删除设备文件或文件夹，并通知媒体库清除残留记录。
+
+        why：`rm` 删文件后 MediaStore 仍残留指向已删文件的行，相册/音乐 App 里
+        会出现点不开的"幽灵条目"。对一个**已不存在**的路径发
+        MEDIA_SCANNER_SCAN_FILE 广播，MediaScanner 会发现文件没了并删掉对应行——
+        同一个广播既能入库（push）也能清库（delete）。
+
+        要扫描的路径怎么来：
+        - 单个文件：调用方传进来的 remote_path 就是它本身，直接用，无需多查。
+        - 文件夹：MediaStore 一行对应一个**文件**（按各文件全路径 _data 记录），
+          广播文件夹路径没用。必须拿到内部每个文件的路径，而 rm 之后就枚举不到了，
+          所以仅文件夹场景需要"删除前先 find 收集清单"。
+        """
         self.check_device()
-        cmd = ["adb", "shell", "rm", "-rf", _device_sh_quote(remote_path)]
-        return self.execute_adb_command(cmd)
+        quoted = _device_sh_quote(remote_path)
+
+        # 1. 收集要通知媒体库的文件路径（删除前，因为文件夹删后无法枚举内部文件）。
+        files_to_scan = []
+        if is_dir:
+            try:
+                ok, out = self.execute_adb_command(["adb", "shell", "find", quoted, "-type", "f"])
+                if ok and out:
+                    files_to_scan = [ln.strip() for ln in out.splitlines() if ln.strip()]
+            except Exception:
+                pass  # 收集失败不影响删除主流程（顶多残留幽灵条目）
+        else:
+            files_to_scan = [remote_path]
+
+        # 2. 删除
+        success, msg = self.execute_adb_command(["adb", "shell", "rm", "-rf", quoted])
+        if not success:
+            return success, msg
+
+        # 3. 通知媒体库清理已删文件的残留行。
+        #    - 转成 /storage/emulated/0/ 形式与 MediaStore 的 _data 列对齐（与 push 一致）。
+        #    - 路径由 Python 逐个单引号化，天然处理空格/特殊字符。
+        #    - 分批拼接，避免文件夹文件过多时单条 shell 命令超出 ARG_MAX。
+        if files_to_scan:
+            self.log(f"通知媒体库清理已删除文件（{len(files_to_scan)} 个）...", "INFO")
+            scan_all_ok = True
+            BATCH = 100
+            for i in range(0, len(files_to_scan), BATCH):
+                cmds = []
+                for p in files_to_scan[i:i + BATCH]:
+                    sp = p.replace("/sdcard/", "/storage/emulated/0/", 1)
+                    safe = sp.replace("'", "'\\''")
+                    cmds.append(f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{safe}'")
+                batch_ok, _ = self.execute_adb_command(["adb", "shell", " ; ".join(cmds)])
+                scan_all_ok = scan_all_ok and batch_ok
+            if scan_all_ok:
+                self.log("媒体库清理通知完成", "SUCCESS")
+            else:
+                self.log("媒体库清理通知部分失败（文件已删除，仅扫描未完全成功）", "ERROR")
+
+        return success, msg
 
     # --- Wireless Debugging Logic ---
     

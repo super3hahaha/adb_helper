@@ -221,3 +221,19 @@ Tkinter 单线程，UI 只能在主线程更新。`subprocess.run(adb ...)` 在�
 **解决**：给 canvas 额外绑 `<Map>`，在 tab 被 grid 显示的瞬间用 `after_idle` 立即 fit（并取消排队中的防抖）。`<Map>` 只在显示/切换 tab 时触发、拖动 resize 不触发，所以既消掉首屏抖动，又保留 resize 防抖。`<Configure>` 仍走防抖，不要去掉。
 
 注意：`_fit_frame_dimensions_to_canvas(event)` 内部只读 `canvas.winfo_width()`，不使用 event 坐标，所以把 `<Map>` 的 event 传进去没问题。
+
+### 删除设备文件也要通知媒体库（按文件/文件夹分两种取路径方式）
+
+`rm` 删文件后 MediaStore 不会自动更新，相册/音乐 App 里残留点不开的"幽灵条目"（Android 重启/重挂载时才自愈）。对一个**已不存在**的路径发 `MEDIA_SCANNER_SCAN_FILE` 广播，MediaScanner 会发现文件没了并删掉对应行——同一广播既入库又清库。
+
+要广播的路径怎么拿，两种情况**别混淆**：
+
+- **单个文件**：调用方传进来的路径就是它本身，删完直接广播这条，**不需要 find**。
+- **文件夹**：MediaStore 一行对应一个**文件**（按各文件全路径 `_data` 记录），广播文件夹路径没用。必须拿到内部每个文件的路径，而 `rm -rf` 之后就枚举不到了——所以**仅文件夹**需要"删除前先 `find '<dir>' -type f` 收集清单"。
+
+`delete_device_file(remote_path, is_dir=...)` 由调用方传入类型（文件管理器 tree 的"类型"列 `值=="文件夹"` 直接知道，无需额外 adb 查询）。实现细节：
+
+- 广播路径转 `/storage/emulated/0/` 形式与 MediaStore `_data` 对齐
+- 路径由 Python 逐个单引号化，处理空格/特殊字符
+- 按 100 个一批拼接，避免大文件夹单条 shell 命令超 ARG_MAX
+- 收集/扫描失败都不影响删除主流程（顶多残留幽灵条目）
