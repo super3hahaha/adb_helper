@@ -51,6 +51,9 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.entry_search.pack(side="left", padx=5, fill="x", expand=True)
         # 绑定搜索框改变事件以实时更新高亮
         self.entry_search.bind("<KeyRelease>", self._on_search_change)
+        # 搜索结果数量
+        self.lbl_match_count = ctk.CTkLabel(frame_toolbar, text="", width=40, text_color="gray")
+        self.lbl_match_count.pack(side="left", padx=(0, 5))
         
         # 脱水模式 Checkbox
         self.var_dehydrate = ctk.BooleanVar(value=True)
@@ -72,12 +75,14 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
         self.textbox.configure(state="disabled")
+        self._update_match_count()
 
     def _on_search_change(self, event=None):
         """当搜索高亮输入框内容改变时，重新应用高亮"""
         self.textbox.tag_remove("highlight", "1.0", "end")
         search_kw = self.entry_search.get()
         if not search_kw:
+            self.lbl_match_count.configure(text="")
             return
             
         # 在整个文本框中查找并高亮
@@ -92,6 +97,16 @@ class FirebaseWindow(ctk.CTkToplevel):
             end_pos = f"{start_pos}+{len(search_kw)}c"
             self.textbox.tag_add("highlight", start_pos, end_pos)
             start_pos = end_pos
+
+        self._update_match_count()
+
+    def _update_match_count(self):
+        """根据当前高亮的 tag 数量更新搜索结果计数显示"""
+        if not self.entry_search.get():
+            self.lbl_match_count.configure(text="")
+            return
+        count = len(self.textbox.tag_ranges("highlight")) // 2
+        self.lbl_match_count.configure(text=str(count))
 
     def update_logs(self):
         if not self.is_running:
@@ -168,6 +183,8 @@ class FirebaseWindow(ctk.CTkToplevel):
                     
             if has_new_logs:
                 self.textbox.see("end")
+                if search_kw:
+                    self._update_match_count()
             self.textbox.configure(state="disabled")
             
         # 每 100ms 轮询一次
