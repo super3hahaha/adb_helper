@@ -31,9 +31,10 @@ class UpdateFlow:
     挂在任意 Tk 窗口上即可，不自己创建 Toplevel 作为父窗口。
     """
 
-    def __init__(self, parent, log_func=None):
+    def __init__(self, parent, log_func=None, config_manager=None):
         self.parent = parent
         self.log = log_func or (lambda *a, **k: None)
+        self.config_manager = config_manager
         self.updater = Updater()
         self._progress_window = None
         self._cancel_download = None
@@ -52,6 +53,40 @@ class UpdateFlow:
             self.parent.after(0, lambda: self._after_check_error(busy, msg))
 
         self.updater.check_async(on_result, on_error)
+
+    def start_silent(self):
+        """启动时静默自动检查：只有发现的新版本未被用户跳过时才弹窗。
+
+        与 start() 的区别：
+        - 不显示"正在检查"忙等窗口，不打扰用户；
+        - 已是最新 / 检查失败 都只记日志，不弹框；
+        - 命中用户此前"暂不更新"跳过的同一版本时，直接跳过不弹窗；
+          一旦远端出现更高的新版本（版本号变化），跳过记录失效，重新弹窗。
+        """
+        self.log("启动自动检查更新...", "INFO")
+
+        def on_result(info):
+            self.parent.after(0, lambda: self._after_silent_check(info))
+
+        def on_error(msg):
+            # 静默：失败只记日志，不弹错误框
+            self.parent.after(0, lambda: self.log(f"自动检查更新失败: {msg}", "WARNING"))
+
+        self.updater.check_async(on_result, on_error)
+
+    def _after_silent_check(self, info):
+        if info is None:
+            self.log("自动检查更新：当前已是最新版本", "INFO")
+            return
+
+        skipped = ""
+        if self.config_manager:
+            skipped = self.config_manager.get_skipped_update_version()
+        if skipped and skipped == info["version"]:
+            self.log(f"已跳过版本 v{info['version']}，本次不再提示", "INFO")
+            return
+
+        self._show_update_dialog(info)
 
     # ---------- 检查结果 ----------
     def _after_check(self, busy, info):
@@ -110,6 +145,13 @@ class UpdateFlow:
             dlg.destroy()
 
         def on_cancel():
+            # 记录"暂不更新/关闭弹窗"跳过的版本：下次启动不再为同一版本弹窗，
+            # 直到远端出现更高版本（版本号变化）才会重新提示。
+            if self.config_manager:
+                try:
+                    self.config_manager.set_skipped_update_version(info["version"])
+                except Exception:
+                    pass
             dlg.destroy()
 
         ctk.CTkButton(

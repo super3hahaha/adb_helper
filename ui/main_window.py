@@ -84,6 +84,9 @@ class MainWindow(TkinterDnD_CTk):
         hide_log = self.config_manager.get_hide_global_log()
         self.toggle_global_log(hide_log)
 
+        # 启动后延迟做一次静默检查更新（等窗口完成绘制再发起网络请求）
+        self.after(2000, self._auto_check_update)
+
     def bind_mac_shortcuts(self):
         """修复 Mac 系统的 Command 键复制粘贴等快捷键"""
         native_widgets = (tk.Entry, tk.Text, tk.Spinbox)
@@ -157,7 +160,19 @@ class MainWindow(TkinterDnD_CTk):
     def action_check_update(self):
         """检查并更新到最新 Release。"""
         from ui.windows.update_window import UpdateFlow
-        UpdateFlow(self, log_func=self.log_message).start()
+        UpdateFlow(self, log_func=self.log_message, config_manager=self.config_manager).start()
+
+    def _auto_check_update(self):
+        """启动后静默检查更新：发现未跳过的新版本时弹窗，否则静默。"""
+        try:
+            from ui.windows.update_window import UpdateFlow
+            UpdateFlow(
+                self,
+                log_func=self.log_message,
+                config_manager=self.config_manager,
+            ).start_silent()
+        except Exception as e:
+            self.log_message(f"自动检查更新启动失败: {e}", "WARNING")
 
     def _format_device_display(self, device_id):
         """将设备序列号转成下拉框显示文本。"""

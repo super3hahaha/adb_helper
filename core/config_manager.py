@@ -15,7 +15,8 @@ class ConfigManager:
         "apps": [],  # 格式: [{"name": "示例App", "pkg": "com.example.app", "keyword": "example"}]
         "hidden_apks": [],  # 隐藏的 APK 相对路径列表
         "filter_words": [],  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
-        "device_aliases": {}  # 设备序列号 -> 别名，格式: {"0715f7bd99dd1b3a": "测试机 A"}
+        "device_aliases": {},  # 设备序列号 -> 别名，格式: {"0715f7bd99dd1b3a": "测试机 A"}
+        "skipped_update_version": ""  # 用户"暂不更新"跳过的版本号，出现更新的版本时会重新提示
     }
 
     def __init__(self):
@@ -247,6 +248,16 @@ class ConfigManager:
             self.data["device_aliases"] = aliases
             self.save_config()
         return changed
+
+    # ========== 自动更新：已跳过的版本 ==========
+    def get_skipped_update_version(self):
+        """返回用户上次"暂不更新"跳过的版本号（不含 v 前缀），没有则返回空字符串。"""
+        return self.data.get("skipped_update_version", "") or ""
+
+    def set_skipped_update_version(self, version):
+        """记录用户跳过的版本号；传空字符串表示清除。"""
+        self.data["skipped_update_version"] = version or ""
+        self.save_config()
 
     def delete_app(self, name):
         apps = self.data.get("apps", [])

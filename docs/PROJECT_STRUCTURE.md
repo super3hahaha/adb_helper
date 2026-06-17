@@ -30,7 +30,7 @@ adb_helper/
 │   │   ├── contact_selector.py  # 联系人选择对话框
 │   │   └── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
 │   └── windows/             # 独立功能窗口
-│       ├── update_window.py        # 检查更新 / 下载进度 / 触发自动替换
+│       ├── update_window.py        # 检查更新（手动 start / 启动静默 start_silent）/ 下载进度 / 触发自动替换
 │       └── screenshot_preview/     # 截图预览与标注（Mixin 拆分）
 │           ├── __init__.py              # 对外只 re-export ScreenshotPreviewWindow
 │           ├── preview_window.py        # 主窗口：__init__/工具栏/另存/剪贴板/合成导出
