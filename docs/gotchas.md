@@ -237,3 +237,11 @@ Tkinter 单线程，UI 只能在主线程更新。`subprocess.run(adb ...)` 在�
 - 路径由 Python 逐个单引号化，处理空格/特殊字符
 - 按 100 个一批拼接，避免大文件夹单条 shell 命令超 ARG_MAX
 - 收集/扫描失败都不影响删除主流程（顶多残留幽灵条目）
+
+### macOS Retina 下 Tkinter Canvas 显示位图必然模糊（无解，已规划重写）
+
+Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 糊。**矢量绘制（rectangle/line/text）清晰，唯独位图 1x**，是 Tk 固有限制，`tk scaling` / 按 2x 渲染等都试无效。注意：**截图文件本身不糊**（adb screencap 是原生分辨率），糊在 `canvas_mixin.py:70` 按逻辑点尺寸 resize 后被系统放大。
+
+临时止血：`preview_window.py:345 _open_in_system_preview`（"在 Preview 中查看"，系统原生 Retina 清晰）。
+
+根治方案见 [handoff_retina_preview_migration.md](handoff_retina_preview_migration.md)：把 `screenshot_preview` 抽成**独立 PySide6 子进程**（不是同进程嵌入——Tk/Qt 两个 event loop 不能共存）。

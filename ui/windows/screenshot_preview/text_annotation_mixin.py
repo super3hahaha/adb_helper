@@ -14,6 +14,8 @@ canvas 原生绘制的透明文字输入框：虚线边框 + 8 控制点（角/�
     self.update_image()  (CanvasMixin)
     self._push_history()  (HistoryMixin)
 """
+import sys
+import tkinter as tk
 import tkinter.font as tkfont
 
 from .shared import (
@@ -37,6 +39,8 @@ class TextAnnotationMixin:
     def _init_text_state(self):
         self.text_editor = None
         self._committing_text = False
+        self._ime_entry = None       # macOS IME 中继 Entry
+        self._ime_entry_var = None
 
     # ------------------------------------------------------------------
     # 创建 / 重绘
@@ -76,11 +80,7 @@ class TextAnnotationMixin:
 
         self._redraw_text_editor()
         self._start_cursor_blink()
-
-        try:
-            self.canvas.focus_set()
-        except Exception:
-            pass
+        self._attach_ime_entry()
 
     def _compute_editor_bbox_canvas(self):
         """根据当前 editor 状态计算文字 bounding box（canvas 坐标）。
@@ -214,6 +214,47 @@ class TextAnnotationMixin:
         cursor_x_off = measure(last_line_text)
         cursor_y_off = lines_so_far * line_h
         return ax + cursor_x_off, ay + cursor_y_off, line_h
+
+    # ------------------------------------------------------------------
+    # macOS IME 中继 Entry（解决 Canvas 无法接收中文输入的问题）
+    # ------------------------------------------------------------------
+
+    def _attach_ime_entry(self):
+        """创建隐藏的 Entry 控件专门用于接收 IME 输入，然后同步到 canvas 显示。
+        在所有平台上都使用，以统一输入处理逻辑。
+        """
+        self._detach_ime_entry()
+        var = tk.StringVar(value='')
+        self._ime_entry_var = var
+
+        entry = tk.Entry(self, textvariable=var, width=1)
+        # 放到窗口之外，不可见但可接收焦点
+        entry.place(x=-200, y=-200)
+        self._ime_entry = entry
+
+        def _on_var_change(*_):
+            if self.text_editor is None:
+                return
+            new_text = var.get()
+            self.text_editor['content'] = new_text
+            self.text_editor['cursor_pos'] = len(new_text)
+            self.text_editor['cursor_visible'] = True
+            self._redraw_text_editor()
+
+        var.trace_add('write', _on_var_change)
+
+        # Esc 仍然由 Entry 键盘事件处理
+        entry.bind('<Escape>', lambda e: self.cancel_text_entry())
+        entry.focus_set()
+
+    def _detach_ime_entry(self):
+        if self._ime_entry is not None:
+            try:
+                self._ime_entry.destroy()
+            except Exception:
+                pass
+            self._ime_entry = None
+            self._ime_entry_var = None
 
     # ------------------------------------------------------------------
     # 光标闪烁
@@ -466,6 +507,7 @@ class TextAnnotationMixin:
         try:
             ed = self.text_editor
             self._stop_cursor_blink()
+            self._detach_ime_entry()
             text = ed['content']
             anchor = tuple(ed['anchor_img'])
             width_img = ed['width_img']
@@ -512,6 +554,7 @@ class TextAnnotationMixin:
         try:
             ed = self.text_editor
             self._stop_cursor_blink()
+            self._detach_ime_entry()
             for key in ('text_id', 'border_id', 'cursor_id'):
                 if ed.get(key) is not None:
                     try:

@@ -14,6 +14,9 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 from .shared import preferred_tk_font
+from core.platform_utils import PlatformUtils
+
+_IS_MAC = PlatformUtils.get_os_type() == "mac"
 
 
 class CanvasMixin:
@@ -146,7 +149,8 @@ class CanvasMixin:
         else:
             direction = 1
 
-        ctrl_pressed = bool(event.state & 0x4)
+        # mac 上用 Command（0x8），其他平台用 Ctrl（0x4）
+        ctrl_pressed = bool(event.state & (0x8 if _IS_MAC else 0x4))
 
         if ctrl_pressed:
             if direction < 0:
