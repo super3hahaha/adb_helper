@@ -19,6 +19,15 @@ if getattr(sys, 'frozen', False):
         # 我们可以将工作目录设置到 MEIPASS (临时解压目录)
         os.chdir(sys._MEIPASS)
 
+# --- Qt 截图预览子进程入口 ---
+# 主进程以 `<program> --qt-preview <image_path> <temp_dir> [--theme dark|light]` 拉起
+# （见 ui/windows/qt_preview/launcher.py）。必须在下面的 stdout 重定向之前拦截：
+# 子进程靠 stdin/stdout 与主进程做 JSON 行 IPC，重定向会劫持通道。
+if "--qt-preview" in sys.argv:
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from ui.windows.qt_preview.preview_app import main as _qt_preview_main
+    sys.exit(_qt_preview_main(sys.argv))
+
 # 修复 PyInstaller macOS --windowed 模式下 sys.stdout/sys.stderr 为 None 导致的 print 崩溃
 # 并且将输出重定向到日志文件，方便调试闪退问题
 if sys.stdout is None or getattr(sys, 'frozen', False):

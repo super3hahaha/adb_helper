@@ -266,10 +266,14 @@ Tkinter 单线程，UI 只能在主线程更新。`subprocess.run(adb ...)` 在�
 - 按 100 个一批拼接，避免大文件夹单条 shell 命令超 ARG_MAX
 - 收集/扫描失败都不影响删除主流程（顶多残留幽灵条目）
 
-### macOS Retina 下 Tkinter Canvas 显示位图必然模糊（无解，已规划重写）
+### macOS Retina 下 Tkinter Canvas 显示位图必然模糊（Tk 无解，已用 Qt 子进程根治）
 
-Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 糊。**矢量绘制（rectangle/line/text）清晰，唯独位图 1x**，是 Tk 固有限制，`tk scaling` / 按 2x 渲染等都试无效。注意：**截图文件本身不糊**（adb screencap 是原生分辨率），糊在 `canvas_mixin.py:70` 按逻辑点尺寸 resize 后被系统放大。
+Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 糊。**矢量绘制（rectangle/line/text）清晰，唯独位图 1x**，是 Tk 固有限制。2026-06/07 三轮隔离实测全部失败，别再试：升 Tk9、换 ctk6 CTkImage、喂 2× 位图（清晰但显示成两倍大，Tk 恒按 1 图像 px = 1 point 栅格化）、ctk `widget_scaling=2.0 + window_scaling=0.5` 对冲（只改控件 geometry，改不了位图栅格化）。注意：**截图文件本身不糊**（adb screencap 是原生分辨率）。
 
-临时止血：`preview_window.py:345 _open_in_system_preview`（"在 Preview 中查看"，系统原生 Retina 清晰）。
+根治（2026-07-09 已实施，见 [handoff_retina_preview_migration.md](handoff_retina_preview_migration.md)）：截图预览标注窗迁移为 **PySide6 独立子进程**（`ui/windows/qt_preview/`），Tk 版保留作 PySide6 缺失时的兜底。相关约束：
 
-根治方案见 [handoff_retina_preview_migration.md](handoff_retina_preview_migration.md)：把 `screenshot_preview` 抽成**独立 PySide6 子进程**（不是同进程嵌入——Tk/Qt 两个 event loop 不能共存）。
+- **Tk/Qt 两个 event loop 不能同进程共存**，必须子进程隔离；子进程入口复用 `main.py --qt-preview`（避免 PyInstaller 第二打包目标）
+- `main.py` 的 `--qt-preview` 拦截必须在 **stdout 重定向到 crash log 之前**，否则 IPC 通道被劫持
+- `screenshot_preview/__init__.py` 必须保持 **PEP 562 惰性导出**：Qt 子进程要 import 包内的 `shared`/`export`（纯 PIL），eager import 会把 ctk/tkinter 拉进 Qt 进程
+- 重截不让子进程碰 adb，走 IPC 回主进程调 `adb_helper.take_screenshot`（serial/别名/尺寸后缀天然正确）；`on_complete` 在 adb 工作线程触发，launcher 里只做带锁的 stdin 写，不碰 Tk
+- **QGraphicsView 平移受滚动范围钳制**：sceneRect=图像时，图像整幅可见（初始 fit 缩放）滚动范围为 0，✋/空格平移完全拖不动。解法是 `update_scene_margins()` 给场景四周扩一圈视口大小的余量（缩放/视口 resize 时都要更新），恢复 Tk 版自由平移。扩余量后滚动条必须 `ScrollBarAlwaysOn`：按需显示的话，初始 fit 按"无滚动条视口"计算 → 滚动条随后出现挤掉一条边 → 图像底部被遮一截。另：所有按钮/滑块要 `setFocusPolicy(NoFocus)`，否则空格会触发聚焦按钮而不是临时平移

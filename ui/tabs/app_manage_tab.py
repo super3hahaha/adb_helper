@@ -11,6 +11,7 @@ from ui.components.tooltip import ModernTooltip
 
 from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.windows.screenshot_preview import ScreenshotPreviewWindow
+from ui.windows.qt_preview.launcher import launch_qt_preview
 from ui.components.logcat_window import LogcatWindow
 
 class AppManageTab(ctk.CTkFrame):
@@ -324,6 +325,9 @@ class AppManageTab(ctk.CTkFrame):
 
     def show_screenshot_preview(self, image_path):
         temp_dir = self.config_manager.get_temp_dir()
+        # 优先走 Qt 子进程预览（Retina 下清晰）；PySide6 不可用时回退 Tk 标注窗
+        if launch_qt_preview(image_path, temp_dir, log_func=self.log, adb_helper=self.adb_helper):
+            return
         ScreenshotPreviewWindow(self.winfo_toplevel(), image_path, log_func=self.log, adb_helper=self.adb_helper, temp_dir=temp_dir)
 
     def action_screen_record(self):

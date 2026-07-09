@@ -31,13 +31,18 @@ adb_helper/
 │   │   └── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
 │   └── windows/             # 独立功能窗口
 │       ├── update_window.py        # 检查更新（手动 start / 启动静默 start_silent）/ 下载进度 / 触发自动替换
-│       └── screenshot_preview/     # 截图预览与标注（Mixin 拆分）
-│           ├── __init__.py              # 对外只 re-export ScreenshotPreviewWindow
-│           ├── preview_window.py        # 主窗口：__init__/工具栏/另存/剪贴板/合成导出
+│       ├── qt_preview/             # Qt 截图预览标注（独立子进程，Retina 高清；默认入口）
+│       │   ├── __init__.py              # 空壳（不 import 子模块，两侧进程隔离）
+│       │   ├── launcher.py              # 主进程侧：拉起子进程/日志回流/代理重截（IPC）
+│       │   └── preview_app.py           # 子进程侧：PySide6 完整标注窗（main.py --qt-preview 调起）
+│       └── screenshot_preview/     # Tk 截图预览与标注（Mixin 拆分；PySide6 缺失时的兜底）
+│           ├── __init__.py              # 惰性 re-export ScreenshotPreviewWindow（PEP 562，勿改回 eager）
+│           ├── preview_window.py        # 主窗口：__init__/工具栏/另存/剪贴板
 │           ├── canvas_mixin.py          # 图像显示/缩放/平移/重绘/坐标变换
 │           ├── drawing_tools_mixin.py   # 矩形/箭头 鼠标事件分发
 │           ├── text_annotation_mixin.py # 8 控制点文字编辑器
 │           ├── history_mixin.py         # Undo / Redo 栈
+│           ├── export.py                # 标注合成回 PIL Image（纯 PIL，Tk/Qt 两窗共用）
 │           └── shared.py                # 字体/文本换行/常量 纯函数
 ├── resources/               # 内置资源
 │   └── ADBKeyboard.apk      # ADB Keyboard 输入法
@@ -54,6 +59,7 @@ adb_helper/
 | `customtkinter` | 第三方 | 现代化 Tkinter UI 框架，提供主窗口、按钮、输入框、TabView 等组件 |
 | `Pillow` | 第三方 | 图像处理库，用于截图预览、标注绘制和图片格式转换 |
 | `tkinterdnd2` | 第三方 | 拖拽支持库，实现文件拖拽安装 APK 和拖拽上传文件 |
+| `PySide6-Essentials` | 第三方 | Qt 截图预览标注子进程（Retina 高清）；缺失时自动回退 Tk 标注窗 |
 | `requests` | 第三方 | HTTP 客户端，用于 GitHub Releases 查询与更新包流式下载（缺失时退化到 urllib） |
 | `pywin32` | 第三方 (Windows) | Windows 专用，提供剪贴板等系统级功能 |
 | `tkinter` | 标准库 | Python 内置 GUI 库，提供 Treeview、Text、messagebox、filedialog 等基础组件 |

@@ -29,3 +29,7 @@ temp/
 config.json
 bin/
 
+# PyInstaller build output
+build/
+dist/
+
