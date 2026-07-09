@@ -51,11 +51,11 @@ class ADBHelper:
         else:
             print(f"[{level}] {message}")
 
-    def run_adb_async(self, cmd_list, on_complete=None, check_dev=True):
+    def run_adb_async(self, cmd_list, on_complete=None, check_dev=True, timeout=None):
         """启动新线程执行 ADB 命令"""
         def _wrapper():
             try:
-                success, _ = self.execute_adb_command(cmd_list, check_dev=check_dev)
+                success, _ = self.execute_adb_command(cmd_list, check_dev=check_dev, timeout=timeout)
             except NoDeviceConnectedError:
                 success = False
                 
@@ -70,11 +70,16 @@ class ADBHelper:
     # 加超时保证同步调用一定会在有限时间内返回（或报超时）。
     DEVICES_TIMEOUT = 10   # adb devices：含冷启动 daemon 的余量
     SHELL_TIMEOUT = 20     # 普通 shell/命令
+    PUSH_TIMEOUT = 300     # adb push：批量/文件夹传输耗时不定，尤其老设备(Android 8 及更早
+                           # 缺少 Android 9+ 的 sync 协议管线化优化)，多文件逐个走同步 stat+传输，
+                           # 远比单文件慢，20s 通用超时会把仍在正常传输的 push 误杀
+    INSTALL_TIMEOUT = 300  # adb install：apk 装到设备后要做 dex/ART 优化编译，
+                           # 性能较差/存储较慢的设备上这一步可能远超 20s，同样不能用通用超时
 
     def _get_subprocess_kwargs(self, capture_output=True, text=True, timeout=None):
         return PlatformUtils.get_subprocess_kwargs(capture_output, text, timeout)
 
-    def execute_adb_command(self, cmd_list, check_dev=True):
+    def execute_adb_command(self, cmd_list, check_dev=True, timeout=None):
         """执行 ADB 命令并处理输出 (核心函数)"""
         
         # ADB 路径适配
@@ -100,11 +105,13 @@ class ADBHelper:
         cmd_str = " ".join(cmd_list)
         self.log(f"执行命令: {cmd_str}", "CMD")
 
+        effective_timeout = timeout if timeout is not None else self.SHELL_TIMEOUT
+
         try:
             # 执行命令
             result = subprocess.run(
                 cmd_list,
-                **self._get_subprocess_kwargs(timeout=self.SHELL_TIMEOUT)
+                **self._get_subprocess_kwargs(timeout=effective_timeout)
             )
 
             # 处理输出
@@ -126,7 +133,7 @@ class ADBHelper:
                 return False, error_msg
 
         except subprocess.TimeoutExpired:
-            self.log(f"命令超时 ({self.SHELL_TIMEOUT}s)，设备可能休眠/未授权或 USB 异常。", "ERROR")
+            self.log(f"命令超时 ({effective_timeout}s)，设备可能休眠/未授权或 USB 异常。", "ERROR")
             return False, "命令执行超时"
         except FileNotFoundError:
             self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
@@ -552,7 +559,7 @@ class ADBHelper:
             self.log("ADB Keyboard APK 文件不存在，无法自动安装", "ERROR")
             return False
         self.log("首次发送文本，正在自动安装 ADB Keyboard...", "INFO")
-        success, msg = self.execute_adb_command(["adb", "install", apk_path])
+        success, msg = self.execute_adb_command(["adb", "install", apk_path], timeout=self.INSTALL_TIMEOUT)
         if not success:
             self.log(f"ADB Keyboard 安装失败: {msg}", "ERROR")
             return False
@@ -698,7 +705,7 @@ class ADBHelper:
         self.run_adb_async(["adb", "shell", "pm", "clear", pkg], on_complete)
 
     def install_apk(self, apk_path, on_complete=None):
-        self.run_adb_async(["adb", "install", "-r", apk_path], on_complete)
+        self.run_adb_async(["adb", "install", "-r", apk_path], on_complete, timeout=self.INSTALL_TIMEOUT)
 
     def push_files(self, local_paths: list, remote_path: str):
         """推送多个文件或文件夹到设备"""
@@ -738,7 +745,7 @@ class ADBHelper:
             # 兼容路径带空格的情况，虽然 execute_adb_command 内部用列表传参通常不需要加引号
             # 但为防万一，确保传入的是纯净路径
             cmd = ["adb", "push", push_local_path, push_remote_path]
-            success, msg = self.execute_adb_command(cmd)
+            success, msg = self.execute_adb_command(cmd, timeout=self.PUSH_TIMEOUT)
             if success:
                 self.log(f"推送完成: {display_name}", "SUCCESS")
                 success_count += 1
@@ -773,7 +780,8 @@ class ADBHelper:
                     scan_one = f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{safe_path}'"
                     shell_cmd = f"touch '{safe_path}' ; {scan_one}"
                 self.log(f"通知媒体库扫描: {display_name}...", "INFO")
-                scan_ok, _ = self.execute_adb_command(["adb", "shell", shell_cmd])
+                scan_timeout = self.PUSH_TIMEOUT if os.path.isdir(local_path) else None
+                scan_ok, _ = self.execute_adb_command(["adb", "shell", shell_cmd], timeout=scan_timeout)
                 if scan_ok:
                     self.log(f"媒体库通知完成: {display_name}", "SUCCESS")
                 else:
@@ -858,7 +866,7 @@ class ADBHelper:
 
     def install_apk_sync(self, apk_path):
         """同步安装 APK 并返回结果，供拖拽安装使用"""
-        return self.execute_adb_command(["adb", "install", "-r", apk_path])
+        return self.execute_adb_command(["adb", "install", "-r", apk_path], timeout=self.INSTALL_TIMEOUT)
 
     def clear_google_play_data(self):
         """清除 Google Play 商店数据"""
@@ -1359,10 +1367,30 @@ class ADBHelper:
         Calls on_complete(local_path) when done.
         """
         def _thread():
+            error_reason = None
             try:
+                proc_output = ""
                 if self.recording_process:
-                    self.recording_process.terminate()
+                    proc = self.recording_process
+                    died_early = proc.poll() is not None
+                    proc.terminate()
                     self.recording_process = None
+                    try:
+                        out, err = proc.communicate(timeout=5)
+                        proc_output = (err or b"").decode("utf-8", errors="ignore").strip()
+                        if not proc_output:
+                            proc_output = (out or b"").decode("utf-8", errors="ignore").strip()
+                    except Exception:
+                        pass
+                    if died_early:
+                        if "screenrecord" in proc_output and "not found" in proc_output:
+                            error_reason = (
+                                "此设备无法执行 screenrecord（可能是系统未打包该工具，也可能被定制 ROM 的安全策略拦截），"
+                                "无法用 adb 方式录屏，这是设备侧限制，与本工具无关"
+                            )
+                        else:
+                            error_reason = f"screenrecord 进程在录制过程中已提前退出{': ' + proc_output if proc_output else ''}"
+                        self.log(error_reason, "WARNING")
 
                 time.sleep(2)
 
@@ -1372,15 +1400,18 @@ class ADBHelper:
                 local_filename = f"screenrecord_{int(time.time())}{device_suffix}.mp4"
                 local_path = os.path.join(temp_dir, local_filename)
 
-                self.execute_adb_command(["adb", "pull", remote_path, local_path])
+                pull_ok, _ = self.execute_adb_command(["adb", "pull", remote_path, local_path])
                 self.execute_adb_command(["adb", "shell", "rm", remote_path])
 
+                if not pull_ok and proc_output and not error_reason:
+                    self.log(f"screenrecord 输出: {proc_output}", "WARNING")
+
                 if on_complete:
-                    on_complete(local_path)
+                    on_complete(local_path, error_reason)
 
             except Exception as e:
                 self.log(f"停止录制失败: {e}", "ERROR")
-                if on_complete: on_complete(None)
+                if on_complete: on_complete(None, str(e))
 
         threading.Thread(target=_thread, daemon=True).start()
 

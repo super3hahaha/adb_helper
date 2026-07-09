@@ -332,7 +332,7 @@ class AppManageTab(ctk.CTkFrame):
             self.log("正在停止录制并拉取视频...", "INFO")
             self.btn_screen_record.configure(text="处理中...", state="disabled")
             
-            def on_complete(local_path):
+            def on_complete(local_path, error_reason=None):
                 self.is_recording = False
                 self.after(0, lambda: self.btn_screen_record.configure(text="录制屏幕", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"], state="normal"))
                 
@@ -395,7 +395,8 @@ class AppManageTab(ctk.CTkFrame):
                     self.after(0, ask_save)
                 else:
                     self.log("录制失败或未生成文件", "ERROR")
-                    self.after(0, lambda: messagebox.showerror("失败", "录制失败", parent=self))
+                    msg = error_reason if error_reason else "录制失败"
+                    self.after(0, lambda: messagebox.showerror("失败", msg, parent=self))
 
             try:
                 self.adb_helper.stop_recording(self.config_manager.get_temp_dir(), on_complete)

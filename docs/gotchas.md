@@ -102,6 +102,18 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 
 不传 `--bit-rate` 时 Android 用 20 Mbps，1 分钟 ≈ 150 MB。UI 录屏内容（纯色/文字）压缩效率极高，4 Mbps 肉眼无差、2 Mbps 仍清晰。`start_recording(bit_rate=...)` 默认 4 Mbps，约 30 MB/分钟。参数单位是 bps，传 `int`。
 
+### 部分老 / 定制 ROM 设备的 `screenrecord` 用不了，机制不同但都无法绕过
+
+**实测 OPPO A31 / ColorOS (Android 9, CPH2015EX_11_A.67)**：`adb shell screenrecord ...` 报 `/system/bin/sh: screenrecord: not found`；但 `ls -l /system/bin/screenrecord` 报 `Permission denied`（不是真的没这个文件，是 SELinux 拒绝 `shell` domain 访问/执行该二进制，exec 失败后 sh 呈现成"not found"）；`getenforce` = `Enforcing`；`screencap` 在同一台设备上完全正常，同一份 adb 连别的设备（SDK 36）`screenrecord --help` 也正常——所以这是**这台设备的定制 ROM 策略**，不是分辨率/编码器不兼容，也不是我们代码的问题，更不是 `_log_show_touches_permission_hint` 里提到的"权限监控"开关能解决的（那个只挡 `settings put`，这个是挡二进制执行）。
+
+**实测华为 P9 / EMUI (Android 8.0.0.528, EVA-AL10)**：现象一样（`screenrecord: not found`），但机制不同——`ls -l /system/bin/screenrecord` 直接报 `No such file or directory`，全盘 `find / -iname 'screenrecord*'` 也搜不到，说明这个固件**压根没打包这个二进制**，不是权限/SELinux 问题。`screencap` 同样正常。
+
+两台设备结论一样：**adb 录屏在这类设备上没有已知的绕过方法**（不是权限监控开关、不是 root 就能解决的），截图功能（`screencap`）不受影响。判断逻辑统一按 stderr 里是否含 `screenrecord` + `not found` 识别，不区分具体机制，因为用户侧都是"这台设备用不了 adb 录屏"。
+
+现象链：`start_recording` 里 `screenrecord` 进程刚起来就因 SELinux 拒绝而退出 → `/sdcard/screen_record_tmp.mp4` 从未被创建 → `stop_recording` 里 `adb pull`/`adb shell rm` 都报 `No such file or directory`，表面像是文件没生成，其实是命令根本没跑起来。
+
+`stop_recording`（[adb_helper.py:1364](../core/adb_helper.py:1364)）现在会检测 `recording_process` 是否在用户点停止之前就已经退出（`poll()`），捕获其 stderr，命中 `screenrecord ... not found` 时给出明确的"设备侧限制，非工具问题"提示，并通过 `on_complete(local_path, error_reason)` 把原因带到 UI 的失败弹窗里，不再是干巴巴的"录制失败"。目前没有已知的 adb 侧绕过方法（不是 root 设备的话）。
+
 ### 媒体扫描全版本统一用 `am broadcast`，别用 `content call scan_file`
 
 `push_files` 推完文件后触发媒体扫描，**所有 API 版本都只用** `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`。这条 intent 自 Android Q 起官方标记 deprecated，但实测它才是跨版本最可靠的——`content call scan_file` 反而到处坏：
@@ -202,6 +214,22 @@ rm -rf /sdcard/foo (bar).mp3
 - `adb pull` / `adb push` 走 file-sync 协议，**不**经过设备 sh，原样传路径即可
 - 内部硬编码的 `/sdcard/screen.png`、`/sdcard/screen_record_tmp.mp4` 不含特殊字符，可以不引号化（但加上也没坏处）
 - 单引号转义就用 POSIX 套路 `'\''`，别用双引号（设备 sh 仍会展开 `$var` 和反引号）
+
+### `push_files` 推文件夹在老设备（Android 8 及更早）上会被 20s 通用超时误杀
+
+现象：给 Android 8.0 设备推文件夹（多个文件）会超时失败，报 `命令执行超时`；推单个文件正常。
+
+根因：`execute_adb_command` 原来统一用 `SHELL_TIMEOUT=20s`（这个值是给 `ls`/`getprop` 这类瞬时 shell 命令设计的），`push_files` 也复用它，文件夹和单文件一视同仁。Android 9 之前的 adb sync 协议没有管线化优化，多文件目录 push 是逐个走 stat+传输，比单文件慢得多；文件数一多（如 23 个 mp3）在老设备/老 USB 栈上很容易超过 20s，而 push 本身其实还在正常进行，只是被我们自己的 subprocess timeout 提前杀掉。
+
+解决：`execute_adb_command(cmd_list, check_dev=True, timeout=None)` 新增可选 `timeout` 参数（不传则回退到 `SHELL_TIMEOUT`）；`push_files` 的 `adb push` 命令和文件夹场景下的媒体扫描 `find -exec` 命令都显式传 `PUSH_TIMEOUT=300`（单文件场景的媒体扫描仍用默认 20s，因为只有一次 broadcast，够用）。`push_files` 已经跑在子线程（`tools_tab.py` 的 `_push_thread`），延长超时不会冻住 UI。
+
+### `adb install` 在性能较差的设备上也会被 20s 通用超时误杀
+
+现象：装 apk 时报 `命令超时 (20s)`，但 apk 本身没什么问题，换台好设备装同一个包就正常。
+
+根因：和上面 push 的坑是同一类问题，但触发点不同——`install_apk`（`app_manage_tab.py` 里"安装选中的 APK"走的异步路径，经 `run_adb_async`）、`install_apk_sync`（拖拽安装走的同步路径）以及首次发文本自动装 ADBKeyboard 的那次 `adb install`，原来都没传 `timeout`，一律落到 `SHELL_TIMEOUT=20s`。`adb install` 装完 apk 后设备端还要做 dex/ART 优化编译，存储慢或 CPU 弱的设备这一步可能远超 20s，install 其实还在正常跑，只是被我们自己的 timeout 提前杀掉。
+
+解决：新增 `INSTALL_TIMEOUT=300`；`run_adb_async` 补上 `timeout` 透传参数；上述三处 `adb install` 调用全部显式传 `timeout=self.INSTALL_TIMEOUT`。`install_apk`（异步）和 `install_apk_sync`（拖拽安装的调用方自己开了线程）都不在主线程阻塞，延长超时安全。
 
 ### ADB 同步调用必须加 timeout，且耗时操作不能放主线程
 
