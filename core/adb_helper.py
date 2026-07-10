@@ -76,6 +76,40 @@ class ADBHelper:
     INSTALL_TIMEOUT = 300  # adb install：apk 装到设备后要做 dex/ART 优化编译，
                            # 性能较差/存储较慢的设备上这一步可能远超 20s，同样不能用通用超时
 
+    # 部分老 / 定制 ROM 设备（实测华为 P9 EVA-AL10 / EMUI Android 8.0）USB 连接会在传输中途
+    # 短暂掉线又自动恢复（实测 adb devices 15s 内重新出现），推大文件夹时 adb push 会报
+    # "failed to read copy response: EOF" 而中止。注意 `adb push <dir>/. <remote>` 不是增量同步，
+    # 重试会把整个文件夹全部重传一遍（实测同一批 30 个 mp3 重新 push 是 "30 files pushed, 0 skipped"，
+    # 不会跳过已存在的文件）——但重传的代价好过失败，掉线后原样重试同一条命令即可补全。
+    PUSH_RETRIES = 2          # 失败后再重试的次数（不含首次尝试）
+    PUSH_RECONNECT_WAIT = 20  # 重试前，等待设备重新出现在 `adb devices` 里的最长秒数
+    _PUSH_RETRYABLE_PATTERNS = (
+        "failed to read copy response",
+        "eof",
+        "device offline",
+        "device not found",
+        "no devices",
+        "protocol fault",
+        "connection reset",
+    )
+
+    def _is_retryable_push_error(self, msg):
+        low = (msg or "").lower()
+        return any(p in low for p in self._PUSH_RETRYABLE_PATTERNS)
+
+    def _wait_for_device_reconnect(self, max_wait=None, poll_interval=2):
+        """设备掉线后阻塞等待其重新出现在 `adb devices` 列表，供 push 重试前调用。"""
+        device_id = self.current_device_id
+        if not device_id:
+            return
+        max_wait = self.PUSH_RECONNECT_WAIT if max_wait is None else max_wait
+        waited = 0
+        while waited < max_wait:
+            if device_id in self.get_connected_devices():
+                return
+            time.sleep(poll_interval)
+            waited += poll_interval
+
     def _get_subprocess_kwargs(self, capture_output=True, text=True, timeout=None):
         return PlatformUtils.get_subprocess_kwargs(capture_output, text, timeout)
 
@@ -745,7 +779,14 @@ class ADBHelper:
             # 兼容路径带空格的情况，虽然 execute_adb_command 内部用列表传参通常不需要加引号
             # 但为防万一，确保传入的是纯净路径
             cmd = ["adb", "push", push_local_path, push_remote_path]
-            success, msg = self.execute_adb_command(cmd, timeout=self.PUSH_TIMEOUT)
+            attempt = 0
+            while True:
+                success, msg = self.execute_adb_command(cmd, timeout=self.PUSH_TIMEOUT)
+                if success or attempt >= self.PUSH_RETRIES or not self._is_retryable_push_error(msg):
+                    break
+                attempt += 1
+                self.log(f"推送 {display_name} 时连接中断，等待设备恢复后重试 ({attempt}/{self.PUSH_RETRIES})...", "WARNING")
+                self._wait_for_device_reconnect()
             if success:
                 self.log(f"推送完成: {display_name}", "SUCCESS")
                 success_count += 1

@@ -223,6 +223,16 @@ rm -rf /sdcard/foo (bar).mp3
 
 解决：`execute_adb_command(cmd_list, check_dev=True, timeout=None)` 新增可选 `timeout` 参数（不传则回退到 `SHELL_TIMEOUT`）；`push_files` 的 `adb push` 命令和文件夹场景下的媒体扫描 `find -exec` 命令都显式传 `PUSH_TIMEOUT=300`（单文件场景的媒体扫描仍用默认 20s，因为只有一次 broadcast，够用）。`push_files` 已经跑在子线程（`tools_tab.py` 的 `_push_thread`），延长超时不会冻住 UI。
 
+### 华为 P9 (EVA-AL10) 等老 / 定制 ROM 设备，推大文件夹时 USB 连接会中途自己掉线又恢复
+
+现象：修完上面的超时坑后，同一台设备（华为 P9, EMUI, Android 8.0.0.528, EVA-AL10——就是 [gotchas.md `screenrecord`](#screenrecord) 那条里同一台问题机）推 30 个 mp3 的文件夹，推到 80%（24/30 完成）时中止，报 `adb: error: failed to read copy response: EOF`，不是超时（用时仅 7s，远小于 `PUSH_TIMEOUT`）。
+
+排查：设备当时接着电脑，我直接手动跑 `adb devices` 复现——**两次调用之间设备自己从列表消失了，15s 左右后又自动重新出现**。说明这不是超时或代码 bug，是这台设备的 USB/adbd 连接本身在长耗时传输中途会随机掉线又自愈（老 ROM 常见毛病，和 P9 这台机型已知的 `screenrecord` SELinux 限制是同一类"这台设备比较特殊"问题，但机制不同——这次是传输层连接问题，不是 SELinux 拦截）。
+
+验证 `adb push <dir>/. <remote>` 的重试语义时发现一个容易想当然错的点：**它不是增量同步**，不会跳过已存在且内容相同的文件——同一批 30 个 mp3 掉线后已有 25 个到设备，手动重新 push 整个目录，日志显示 `30 files pushed, 0 skipped`，也就是**全部重传了一遍**，不是只补传缺的 5 个。`adb sync` 才有跳过语义，`adb push` 没有。
+
+解决：`push_files`（[core/adb_helper.py:708](../core/adb_helper.py:708)）给 `adb push` 命令加了重试——遇到 `_is_retryable_push_error()` 判定为连接类错误（`failed to read copy response` / `eof` / `device offline` / `device not found` / `no devices` / `protocol fault` / `connection reset`）时，调用 `_wait_for_device_reconnect()` 轮询等设备重新出现在 `adb devices`（最长 `PUSH_RECONNECT_WAIT=20s`），再原样重跑同一条 push 命令，最多重试 `PUSH_RETRIES=2` 次。像"存储空间不足"这类非连接类错误不在重试名单里，会直接判失败，不做无意义等待。重传是整份重来（见上），对小文件夹代价可忽略；大文件夹反复掉线会变慢，但目前没有比"整份重传"更好的手段（`adb push` 没有断点续传）。
+
 ### `adb install` 在性能较差的设备上也会被 20s 通用超时误杀
 
 现象：装 apk 时报 `命令超时 (20s)`，但 apk 本身没什么问题，换台好设备装同一个包就正常。
