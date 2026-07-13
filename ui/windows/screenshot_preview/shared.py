@@ -9,7 +9,7 @@ from PIL import ImageFont
 
 # ---------- 常量 ----------
 
-DEFAULT_LINE_WIDTH = 9
+DEFAULT_LINE_WIDTH = 5
 
 # 文字编辑器控制点相关（canvas 像素）
 HANDLE_SIZE = 7          # 控制点方块边长

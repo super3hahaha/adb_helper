@@ -13,11 +13,16 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.is_running = True
         self.log_queue = None
         
-        # 居中并保持在主窗口之上，同时绑定主从关系 (随主窗口最小化/恢复，隐藏独立任务栏图标)
-        self.transient(parent.winfo_toplevel())
-        
+        # 不绑定 transient 主从关系，避免随主窗口最小化/恢复而联动消失
+        # 改为默认置顶 (-topmost)，保证独立于主窗口状态，始终显示在最前
+
         self.setup_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # 默认开启置顶
+        self.is_topmost = True
+        self.attributes("-topmost", True)
+        self.btn_topmost.configure(fg_color="#2d7d46", hover_color="#1e5c32")
         
         # 启动日志抓取并轮询
         try:
@@ -34,8 +39,7 @@ class FirebaseWindow(ctk.CTkToplevel):
         frame_toolbar = ctk.CTkFrame(self)
         frame_toolbar.pack(fill="x", padx=10, pady=5)
         
-        # 置于最前按钮
-        self.is_topmost = False
+        # 置于最前按钮 (默认置顶状态在 __init__ 中设置)
         self.btn_topmost = ctk.CTkButton(frame_toolbar, text="置于最前", width=80, command=self.toggle_topmost)
         self.btn_topmost.pack(side="left", padx=5)
 
