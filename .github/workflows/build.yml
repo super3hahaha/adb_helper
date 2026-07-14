@@ -66,15 +66,24 @@ jobs:
           cp platform-tools/adb bin/mac/
           chmod +x bin/mac/adb
 
+      # macOS 不装 UPX：PyInstaller 在非 Windows 平台会直接禁用 UPX
+      # （"known compatibility problems"，装了也是空转，PyInstaller 官方结论）。
+      - name: Install UPX (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install upx -y
+
+      # exclude 列表与 ADBHelper.spec 保持一致：PySide6 只在截图标注子进程里用到
+      # QtCore/QtGui/QtWidgets，这些是子进程用不到、但 PyInstaller 的 PySide6 hook
+      # 会顺带打包进来的 Qt 大件（QtQml/QtQuick 等尤其占体积）。
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --noconsole --onefile --hidden-import win32clipboard --add-data "bin/win/adb.exe:bin/win" --add-data "bin/win/AdbWinApi.dll:bin/win" --add-data "bin/win/AdbWinUsbApi.dll:bin/win" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper-${{ github.ref_name }}" main.py
-          
+          pyinstaller --noconsole --onefile --hidden-import win32clipboard --add-data "bin/win/adb.exe:bin/win" --add-data "bin/win/AdbWinApi.dll:bin/win" --add-data "bin/win/AdbWinUsbApi.dll:bin/win" --collect-all customtkinter --collect-all tkinterdnd2 --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQuickWidgets --exclude-module PySide6.QtOpenGL --exclude-module PySide6.QtOpenGLWidgets --exclude-module PySide6.QtSql --exclude-module PySide6.QtTest --exclude-module PySide6.QtXml --exclude-module PySide6.QtConcurrent --exclude-module PySide6.QtDBus --exclude-module PySide6.QtDesigner --exclude-module PySide6.QtHelp --exclude-module PySide6.QtSvg --exclude-module PySide6.QtSvgWidgets --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtPrintSupport --name "ADBHelper-${{ github.ref_name }}" main.py
+
       - name: Build with PyInstaller (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          pyinstaller --noconsole --windowed --add-data "bin/mac/adb:bin/mac" --collect-all customtkinter --collect-all tkinterdnd2 --name "ADBHelper" main.py
+          pyinstaller --noconsole --windowed --add-data "bin/mac/adb:bin/mac" --collect-all customtkinter --collect-all tkinterdnd2 --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQuickWidgets --exclude-module PySide6.QtOpenGL --exclude-module PySide6.QtOpenGLWidgets --exclude-module PySide6.QtSql --exclude-module PySide6.QtTest --exclude-module PySide6.QtXml --exclude-module PySide6.QtConcurrent --exclude-module PySide6.QtDBus --exclude-module PySide6.QtDesigner --exclude-module PySide6.QtHelp --exclude-module PySide6.QtSvg --exclude-module PySide6.QtSvgWidgets --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtPrintSupport --name "ADBHelper" main.py
           cd dist
           zip -r ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
 
