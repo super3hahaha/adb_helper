@@ -5,6 +5,7 @@ import re
 import time
 import os
 import queue
+import xml.etree.ElementTree as ET
 from core.platform_utils import PlatformUtils
 
 class NoDeviceConnectedError(Exception):
@@ -648,6 +649,34 @@ class ADBHelper:
             return False, "Empty text"
         safe_text = text.replace("'", "'\\''")
         return self.execute_adb_command(["adb", "shell", "input", "text", f"'{safe_text}'"])
+
+    def get_focused_input_text(self):
+        """通过 uiautomator dump 读取当前界面输入框(EditText)的文本内容。
+
+        优先取 focused=true 的 EditText；没有聚焦项时取第一个有文本内容的 EditText。
+        用 _shell_silent 而非 execute_adb_command，避免几十 KB 的界面 XML 刷屏日志面板。
+        """
+        self.check_device()
+        remote_path = "/data/local/tmp/adb_tool_uidump.xml"
+        output = self._shell_silent([
+            "shell",
+            f"uiautomator dump {remote_path} >/dev/null 2>&1 && cat {remote_path}"
+        ])
+        if not output or "<?xml" not in output:
+            return False, "获取界面信息失败，请确认设备屏幕已点亮并停留在可操作界面"
+
+        try:
+            root = ET.fromstring(output)
+        except ET.ParseError:
+            return False, "解析界面信息失败"
+
+        edit_nodes = [n for n in root.iter("node") if "EditText" in n.get("class", "")]
+        if not edit_nodes:
+            return False, "当前界面未找到输入框"
+
+        focused = next((n for n in edit_nodes if n.get("focused") == "true"), None)
+        target = focused or next((n for n in edit_nodes if n.get("text")), edit_nodes[0])
+        return True, target.get("text", "")
 
     def sim_low_battery(self):
         def _seq():

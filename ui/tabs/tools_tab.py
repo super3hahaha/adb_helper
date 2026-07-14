@@ -71,6 +71,9 @@ class ToolsTab(ctk.CTkFrame):
              "通过 ADB Keyboard 广播发送，支持中文、俄语等所有语言。\n"
              "首次使用会自动安装 ADB Keyboard APK。\n"
              "部分设备（如 OPPO）需手动在设置中切换默认输入法。"),
+            ("获取并复制当前输入框内容",
+             "通过 uiautomator dump 读取手机当前界面输入框的文本，复制到电脑剪贴板。\n"
+             "优先取当前聚焦的输入框；密码类输入框读不到真实内容。"),
         ])
 
         # 发送文本 - 模拟按键模式
@@ -85,11 +88,16 @@ class ToolsTab(ctk.CTkFrame):
         # 发送文本 - ADB Keyboard 模式
         ctk.CTkLabel(frame_dev, text="ADB Keyboard (支持所有语言)", font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(2, 0), anchor="w", padx=8)
         input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
-        input_frame.pack(pady=(0, 4), padx=8, fill="x")
+        input_frame.pack(pady=(0, 1), padx=8, fill="x")
         self.entry_input_text = ctk.CTkEntry(input_frame, height=sys_btn_h, placeholder_text="输入要发送的文本...")
         self.entry_input_text.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ctk.CTkButton(input_frame, text="发送", width=56, height=sys_btn_h, command=self.action_send_text).pack(side="right")
         ctk.CTkButton(input_frame, text="x", width=20, height=20, fg_color="transparent", hover_color="gray70", text_color="gray50", font=ctk.CTkFont(size=11), command=lambda: self.entry_input_text.delete(0, "end")).pack(side="right", padx=(0, 2))
+
+        # 获取当前输入框内容
+        get_input_frame = ctk.CTkFrame(frame_dev, fg_color="transparent")
+        get_input_frame.pack(pady=(0, 4), padx=8, fill="x")
+        ctk.CTkButton(get_input_frame, text="获取并复制当前输入框内容", height=sys_btn_h, command=self.action_get_input_text).pack(fill="x")
 
         # 1.5 文件传输 (Push 至设备)
         frame_push = ctk.CTkFrame(self.container_system)
@@ -399,6 +407,28 @@ class ToolsTab(ctk.CTkFrame):
                 self.log(f"已通过模拟按键发送: {text}", "SUCCESS")
             except Exception as e:
                 self.log(f"模拟按键发送异常: {e}", "ERROR")
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_get_input_text(self):
+        def _thread():
+            try:
+                success, result = self.adb_helper.get_focused_input_text()
+            except Exception as e:
+                success, result = False, str(e)
+
+            def _finish():
+                if success:
+                    self.clipboard_clear()
+                    self.clipboard_append(result)
+                    self.update()  # 确保剪贴板内容驻留
+                    if result:
+                        self.log(f"已获取并复制输入框内容: {result}", "SUCCESS")
+                    else:
+                        self.log("输入框内容为空，已复制空字符串到剪贴板", "SUCCESS")
+                else:
+                    self.log(f"获取输入框内容失败: {result}", "ERROR")
+            self.after(0, _finish)
+
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_start_wireless_debug(self):
