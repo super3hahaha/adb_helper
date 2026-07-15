@@ -12,6 +12,7 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.package_name = package_name
         self.is_running = True
         self.log_queue = None
+        self.raw_lines = []  # 全量原始日志缓存，用于过滤条件变化时整体重新渲染
         
         # 不绑定 transient 主从关系，避免随主窗口最小化/恢复而联动消失
         # 改为默认置顶 (-topmost)，保证独立于主窗口状态，始终显示在最前
@@ -48,6 +49,8 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.entry_filter = ctk.CTkEntry(frame_toolbar, width=250)
         self.entry_filter.insert(0, "Logging event: origin=app,name=")
         self.entry_filter.pack(side="left", padx=5)
+        # 绑定过滤框改变事件，实时按新过滤条件对全量日志重新渲染
+        self.entry_filter.bind("<KeyRelease>", self._on_filter_change)
         
         # 搜索高亮 (在显示的行中高亮特定字符)
         ctk.CTkLabel(frame_toolbar, text="搜索高亮:").pack(side="left", padx=5)
@@ -61,7 +64,7 @@ class FirebaseWindow(ctk.CTkToplevel):
         
         # 脱水模式 Checkbox
         self.var_dehydrate = ctk.BooleanVar(value=True)
-        self.chk_dehydrate = ctk.CTkCheckBox(frame_toolbar, text="脱水模式 (精简)", variable=self.var_dehydrate, width=80)
+        self.chk_dehydrate = ctk.CTkCheckBox(frame_toolbar, text="脱水模式 (精简)", variable=self.var_dehydrate, width=80, command=self._on_filter_change)
         self.chk_dehydrate.pack(side="left", padx=10)
         
         # 清除面板按钮
@@ -76,6 +79,7 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.textbox.tag_config("highlight", background="yellow", foreground="black")
 
     def clear_logs(self):
+        self.raw_lines = []
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
         self.textbox.configure(state="disabled")
@@ -112,85 +116,112 @@ class FirebaseWindow(ctk.CTkToplevel):
         count = len(self.textbox.tag_ranges("highlight")) // 2
         self.lbl_match_count.configure(text=str(count))
 
+    def _format_line(self, line, is_dehydrate):
+        """根据脱水模式开关，把原始日志行转换为要显示的文本"""
+        display_line = line
+        if is_dehydrate and "Logging event:" in line:
+            # 尝试提取时间戳部分 (假设以类似 "03-17 17:35:31.573" 开头)
+            time_match = re.match(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})', line)
+            time_str = time_match.group(1) if time_match else ""
+
+            # 提取 name 和 content_type
+            name_match = re.search(r'name=([^,\s]+)', line)
+            content_type_match = re.search(r'content_type=([^,\}]+)', line)
+
+            if name_match:
+                dehydrated_parts = []
+                if time_str:
+                    dehydrated_parts.append(f"[{time_str}]")
+
+                params = []
+                params.append(f"{name_match.group(1)}")
+                if content_type_match:
+                    params.append(content_type_match.group(1).strip())
+
+                if params:
+                    dehydrated_parts.append(" >> ".join(params))
+
+                display_line = " ".join(dehydrated_parts) + "\n"
+        return display_line
+
+    def _append_line(self, line, search_kw, is_dehydrate):
+        """把一行原始日志格式化后插入 textbox 末尾，并按需高亮"""
+        display_line = self._format_line(line, is_dehydrate)
+
+        # 记录插入前的行号
+        start_index = self.textbox.index("end-1c")
+        self.textbox.insert("end", display_line)
+
+        # 搜索高亮逻辑 (决定是否高亮显示的部分)
+        if search_kw:
+            line_lower = display_line.lower()
+            search_kw_lower = search_kw.lower()
+            kw_len = len(search_kw)
+            start_idx = 0
+            while True:
+                start_idx = line_lower.find(search_kw_lower, start_idx)
+                if start_idx == -1:
+                    break
+
+                # 计算在 Textbox 中的绝对位置
+                line_num, col_num = map(int, start_index.split('.'))
+
+                hl_start = f"{line_num}.{col_num + start_idx}"
+                hl_end = f"{line_num}.{col_num + start_idx + kw_len}"
+
+                self.textbox.tag_add("highlight", hl_start, hl_end)
+
+                start_idx += kw_len
+
+    def _on_filter_change(self, event=None):
+        """过滤条件或脱水模式开关变化时，基于全量原始日志缓存整体重新渲染"""
+        filter_kw = self.entry_filter.get().lower()
+        search_kw = self.entry_search.get()
+        is_dehydrate = self.var_dehydrate.get()
+
+        self.textbox.configure(state="normal")
+        self.textbox.delete("1.0", "end")
+        self.textbox.tag_remove("highlight", "1.0", "end")
+
+        for line in self.raw_lines:
+            if not filter_kw or filter_kw in line.lower():
+                self._append_line(line, search_kw, is_dehydrate)
+
+        self.textbox.see("end")
+        self._update_match_count()
+        self.textbox.configure(state="disabled")
+
     def update_logs(self):
         if not self.is_running:
             return
-            
+
         if self.log_queue:
             has_new_logs = False
             filter_kw = self.entry_filter.get().lower()
             search_kw = self.entry_search.get()
             is_dehydrate = self.var_dehydrate.get()
-            
+
             # 尝试获取日志并更新 UI
             self.textbox.configure(state="normal")
             while not self.log_queue.empty():
                 try:
                     line = self.log_queue.get_nowait()
+                    # 全量缓存，保证清空/修改过滤条件时能回溯重新渲染
+                    self.raw_lines.append(line)
                     # 过滤逻辑 (决定是否显示)
                     if not filter_kw or filter_kw in line.lower():
-                        
-                        # 脱水模式处理
-                        display_line = line
-                        if is_dehydrate and "Logging event:" in line:
-                            # 尝试提取时间戳部分 (假设以类似 "03-17 17:35:31.573" 开头)
-                            time_match = re.match(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})', line)
-                            time_str = time_match.group(1) if time_match else ""
-                            
-                            # 提取 name 和 content_type
-                            name_match = re.search(r'name=([^,\s]+)', line)
-                            content_type_match = re.search(r'content_type=([^,\}]+)', line)
-                            
-                            if name_match:
-                                dehydrated_parts = []
-                                if time_str:
-                                    dehydrated_parts.append(f"[{time_str}]")
-                                
-                                params = []
-                                params.append(f"{name_match.group(1)}")
-                                if content_type_match:
-                                    params.append(content_type_match.group(1).strip())
-                                
-                                if params:
-                                    dehydrated_parts.append(" >> ".join(params))
-                                
-                                display_line = " ".join(dehydrated_parts) + "\n"
-
-                        # 记录插入前的行号
-                        start_index = self.textbox.index("end-1c")
-                        self.textbox.insert("end", display_line)
+                        self._append_line(line, search_kw, is_dehydrate)
                         has_new_logs = True
-                        
-                        # 搜索高亮逻辑 (决定是否高亮显示的部分)
-                        if search_kw:
-                            line_lower = display_line.lower()
-                            search_kw_lower = search_kw.lower()
-                            kw_len = len(search_kw)
-                            start_idx = 0
-                            while True:
-                                start_idx = line_lower.find(search_kw_lower, start_idx)
-                                if start_idx == -1:
-                                    break
-                                
-                                # 计算在 Textbox 中的绝对位置
-                                line_num, col_num = map(int, start_index.split('.'))
-                                
-                                hl_start = f"{line_num}.{col_num + start_idx}"
-                                hl_end = f"{line_num}.{col_num + start_idx + kw_len}"
-                                
-                                self.textbox.tag_add("highlight", hl_start, hl_end)
-                                
-                                start_idx += kw_len
 
                 except Exception:
                     break
-                    
+
             if has_new_logs:
                 self.textbox.see("end")
                 if search_kw:
                     self._update_match_count()
             self.textbox.configure(state="disabled")
-            
+
         # 每 100ms 轮询一次
         self.after(100, self.update_logs)
 

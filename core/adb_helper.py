@@ -1310,11 +1310,13 @@ class ADBHelper:
             raise e
 
         self.stop_firebase_logcat()
-        
-        if not hasattr(self, 'firebase_log_queue') or self.firebase_log_queue is None:
-            self.firebase_log_queue = queue.Queue()
-            
-        cmd_logcat = [self.adb_cmd, "-s", self.current_device_id, "logcat", "-v", "time", "-s", "FA", "FA-SVC"]
+
+        # 每次启动都重建队列，避免上一次窗口残留的未消费日志被当作"新日志"读出
+        self.firebase_log_queue = queue.Queue()
+
+        # -T 1：只回看最后 1 行再继续实时流式输出，不依赖设备/主机时钟（两者可能不同步），
+        # 避免用时间戳做 -T 时因设备时钟滞后于主机而把刚产生的新日志也一并过滤掉
+        cmd_logcat = [self.adb_cmd, "-s", self.current_device_id, "logcat", "-v", "time", "-T", "1", "-s", "FA", "FA-SVC"]
         self.log(f"执行专属 Firebase Logcat 命令: {' '.join(cmd_logcat)}", "CMD")
         
         try:
