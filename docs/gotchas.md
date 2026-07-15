@@ -154,6 +154,18 @@ adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1
 adb shell settings get system accelerometer_rotation   # 变 1 就是
 ```
 
+### Qt 预览子进程 stdin/stdout IPC 在 Windows 上不显式设编码会乱码
+
+现象：截图预览窗口第一次截图正常，点击窗口内「➕重新截图」再截一次，日志面板里对应的中文提示（"正在重新截取屏幕..."、"重新截图失败或文件未生成"）变成乱码问号串；同一操作 macOS 上完全正常。
+
+根因：`main.py` 的 `--qt-preview` 分支（[main.py:26](../main.py:26)）在拦截时直接 `sys.exit()` 进入 Qt 子进程，**没有**走到下面第 33 行那段给 `sys.stdout` 显式设 `encoding='utf-8'` 的兜底逻辑。子进程的 `sys.stdout`/`sys.stdin` 因此保持 Python 默认的管道流编码——非控制台管道在 Windows 上默认是系统 ANSI 代码页（简体中文系统是 GBK/cp936），**不是 UTF-8**。而父进程 [launcher.py](../ui/windows/qt_preview/launcher.py:61) 的 `subprocess.Popen(..., encoding="utf-8")` 是显式按 UTF-8 解码子进程的 stdout。子进程用 GBK 编码写中文 JSON 日志，父进程用 UTF-8 解码，两边不一致就乱码。macOS/Linux 非控制台流默认编码本身就是 UTF-8，所以从来没暴露过。
+
+第一次截图的日志之所以正常，是因为那条消息是主窗口自己直接打印的，根本没走这条子进程 IPC 管道；只有经 `preview_app.py` 通过 stdout 回传给主进程的日志（重新截图相关）才会乱码。
+
+解决：`preview_app.py:main()` 入口最开头，对 `sys.stdin`/`sys.stdout`/`sys.stderr` 逐个 `reconfigure(encoding='utf-8', errors='replace')`（Python 3.7+ 支持），必须在任何 IPC 读写之前执行。
+
+排查同类问题的思路：**任何跨进程 stdin/stdout 文本 IPC，只要没有在两端都显式锁定同一编码，就是 Windows 专属地雷**——父进程指定了编码不代表子进程也用同一编码，Windows 的默认行为不是 UTF-8，Mac/Linux 是，所以本地 Mac 测试永远发现不了。
+
 ### Cutout 字段名也不统一
 
 `DisplayCutout{...}` 里早期是 `safeInsets=Rect(L, T - R, B)`，新版本是 `insets=Rect(...)`。两个都要兼容，全 0 视为「无」。

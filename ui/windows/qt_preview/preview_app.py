@@ -1106,6 +1106,17 @@ class PreviewWindow(QWidget):
 # ----------------------------------------------------------------------
 
 def main(argv):
+    # Windows 上非控制台管道的默认文本编码是系统 ANSI 代码页（简体中文是 GBK），
+    # 不是 UTF-8；父进程 launcher.py 的 Popen 显式用 encoding="utf-8" 解码，
+    # 两边不一致会导致 IPC 里的中文日志乱码。必须在任何 stdout/stdin 写入之前强制 UTF-8。
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     args = [a for a in argv[1:] if a != "--qt-preview"]
     theme = "light"
     if "--theme" in args:
