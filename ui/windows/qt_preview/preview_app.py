@@ -333,7 +333,7 @@ class PreviewWindow(QWidget):
         self.theme = theme
 
         self.setWindowTitle("截图预览 (Preview) - 标注模式")
-        self.resize(900, 700)
+        self.resize(432, 900)
 
         # 窗口级状态（与 Tk 版同名同语义）
         self.drawing_mode = "rect"
@@ -399,32 +399,36 @@ class PreviewWindow(QWidget):
         if self.theme == "dark":
             self.setStyleSheet("QWidget { background-color: #242424; color: #dce4ee; }")
 
-        # ---- 工具栏 ----
+        # ---- 工具栏（拆两行，避免窄窗口下被单行最小宽度撑宽）----
         toolbar = QFrame(self)
-        tb = QHBoxLayout(toolbar)
-        tb.setContentsMargins(5, 5, 5, 5)
-        tb.setSpacing(5)
+        tb_rows = QVBoxLayout(toolbar)
+        tb_rows.setContentsMargins(5, 5, 5, 5)
+        tb_rows.setSpacing(5)
+
+        tb1 = QHBoxLayout()
+        tb1.setSpacing(5)
+        tb_rows.addLayout(tb1)
 
         self.btn_new_screenshot = QPushButton("➕")
         self.btn_new_screenshot.setFixedSize(34, 28)
         self.btn_new_screenshot.setStyleSheet(_btn_style(BTN_GREEN, BTN_GREEN_HOVER))
         self.btn_new_screenshot.clicked.connect(self.take_new_screenshot)
-        tb.addWidget(self.btn_new_screenshot)
+        tb1.addWidget(self.btn_new_screenshot)
 
         self.mode_buttons = {}
         for key, label in ((None, "✋"), ("rect", "⬜"), ("arrow", "↗"), ("text", "T")):
             btn = QPushButton(label)
             btn.setFixedSize(44, 28)
             btn.clicked.connect(lambda checked=False, m=key: self.set_mode(m))
-            tb.addWidget(btn)
+            tb1.addWidget(btn)
             self.mode_buttons[key] = btn
 
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
         sep.setStyleSheet("color: #888888;")
-        tb.addWidget(sep)
+        tb1.addWidget(sep)
 
-        tb.addWidget(QLabel("颜色:"))
+        tb1.addWidget(QLabel("颜色:"))
         for color in ("red", "blue", "green", "yellow"):
             btn = QPushButton("")
             btn.setFixedSize(24, 24)
@@ -432,31 +436,35 @@ class PreviewWindow(QWidget):
                 f"QPushButton {{ background-color: {color}; border: none; border-radius: 5px; }}"
             )
             btn.clicked.connect(lambda checked=False, c=color: self.set_color(c))
-            tb.addWidget(btn)
+            tb1.addWidget(btn)
+        tb1.addStretch(1)
 
-        tb.addSpacing(10)
-        tb.addWidget(QLabel("粗细:"))
+        tb2 = QHBoxLayout()
+        tb2.setSpacing(5)
+        tb_rows.addLayout(tb2)
+
+        tb2.addWidget(QLabel("粗细:"))
         self.width_slider = QSlider(Qt.Horizontal)
         self.width_slider.setRange(1, 24)
         self.width_slider.setValue(DEFAULT_LINE_WIDTH)
         self.width_slider.setFixedWidth(150)
         self.width_slider.valueChanged.connect(self.update_width_label)
-        tb.addWidget(self.width_slider)
+        tb2.addWidget(self.width_slider)
         self.width_label = QLabel(str(DEFAULT_LINE_WIDTH))
         self.width_label.setFixedWidth(30)
-        tb.addWidget(self.width_label)
+        tb2.addWidget(self.width_label)
 
-        tb.addStretch(1)
+        tb2.addStretch(1)
         self.btn_undo = QPushButton("↩ 撤销")
         self.btn_undo.setFixedHeight(28)
         self.btn_undo.setStyleSheet(_btn_style(BTN_RED, BTN_RED_HOVER))
         self.btn_undo.clicked.connect(self.undo_last_shape)
-        tb.addWidget(self.btn_undo)
+        tb2.addWidget(self.btn_undo)
 
         root.addWidget(toolbar)
         root.addWidget(self.view, stretch=1)
 
-        # ---- 控制栏 ----
+        # ---- 控制栏（一行；如果不够宽，Qt 会把窗口撑到能容纳这一行的最小宽度）----
         control = QFrame(self)
         cb = QHBoxLayout(control)
         cb.setContentsMargins(10, 5, 10, 5)

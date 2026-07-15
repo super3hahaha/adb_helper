@@ -72,7 +72,7 @@ class ScreenshotPreviewWindow(
         self.adb_helper = adb_helper
         self.temp_dir = temp_dir
         self.title("截图预览 (Preview) - 标注模式")
-        self.geometry("900x700")
+        self.geometry("432x768")
 
         # 绑定主从关系，隐藏独立任务栏图标，并始终保持在主窗口上方
         self.transient(parent.winfo_toplevel())
@@ -98,7 +98,7 @@ class ScreenshotPreviewWindow(
             self.original_image = Image.open(image_path)
             img_w, img_h = self.original_image.size
             # 初始显示前窗口未绘制完成，用占位尺寸估算
-            self.current_scale = self._compute_fit_scale(img_w, img_h, 860, 580)
+            self.current_scale = self._compute_fit_scale(img_w, img_h, 392, 628)
             self.img_offset_x = 0
             self.img_offset_y = 0
         except Exception as e:
