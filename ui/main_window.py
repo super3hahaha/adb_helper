@@ -41,6 +41,8 @@ class MainWindow(TkinterDnD_CTk):
         from core.platform_utils import PlatformUtils
         if PlatformUtils.get_os_type() == "mac":
             self.bind_mac_shortcuts()
+            # 修复 Tk/Aqua 已知问题：单击 Dock 图标无法恢复已最小化的主窗口
+            self.createcommand('::tk::mac::ReopenApplication', self._on_dock_reopen)
 
         # 主窗口最小化时，保持子窗口显示
         self.bind("<Unmap>", self._on_minimize)
@@ -282,6 +284,12 @@ class MainWindow(TkinterDnD_CTk):
             self.device_var.set(self._format_device_display(new_device))
             self.adb_helper.current_device_id = new_device
             self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
+
+    def _on_dock_reopen(self, *_):
+        """单击 Dock 图标时的回调（macOS Reopen Apple Event），恢复已最小化的主窗口"""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     def _on_minimize(self, event):
         """主窗口最小化时，保持子窗口(Logcat/Firebase等)正常显示"""
