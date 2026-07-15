@@ -28,6 +28,9 @@ class ADBHelper:
         self.current_device_id = None # 当前选中的设备序列号
         # 由外部注入：device_id -> 别名 的解析函数（无则回退到序列号）
         self.device_label_resolver = None
+        # adb server 是否已确认在运行（见 _ensure_adb_server）
+        self._adb_server_ready = False
+        self._adb_server_lock = threading.Lock()
         # ADB 路径适配
         self.adb_cmd = PlatformUtils.get_adb_executable()
 
@@ -114,6 +117,41 @@ class ADBHelper:
     def _get_subprocess_kwargs(self, capture_output=True, text=True, timeout=None):
         return PlatformUtils.get_subprocess_kwargs(capture_output, text, timeout)
 
+    def _ensure_adb_server(self, force=False):
+        """确保 adb server 已在运行，且是用 DEVNULL 句柄启动的。
+
+        Windows 冷启动死锁（start.bat 后设备列表永远刷不出来的根因）：
+        若 server 未运行，任何带 stdout/stderr 管道的 adb 调用（如
+        subprocess.run(["adb","devices"], capture_output=True, timeout=10)）会就地
+        spawn 出 adb server 守护进程，daemon 继承了管道的写句柄且永不关闭 →
+        客户端退出后管道等不到 EOF；到达 timeout 后 subprocess.run 在 Windows
+        分支里 kill 掉客户端，随后还会再调一次**不带超时**的 communicate() 收尾，
+        这一步永久阻塞——所以连 TimeoutExpired 都抛不出来，调用线程直接卡死。
+
+        解决：抢在所有管道调用之前，用 DEVNULL 显式 start-server，daemon 继承的
+        就是无害句柄。server 已在运行时该命令 <100ms 返回，幂等，可放心 force。
+        """
+        if self._adb_server_ready and not force:
+            return
+        with self._adb_server_lock:
+            if self._adb_server_ready and not force:
+                return
+            kwargs = self._get_subprocess_kwargs(
+                capture_output=False, text=False, timeout=self.DEVICES_TIMEOUT
+            )
+            kwargs['stdin'] = subprocess.DEVNULL
+            kwargs['stdout'] = subprocess.DEVNULL
+            kwargs['stderr'] = subprocess.DEVNULL
+            try:
+                subprocess.run([self.adb_cmd, "start-server"], **kwargs)
+                self._adb_server_ready = True
+            except subprocess.TimeoutExpired:
+                self.log(f"启动 adb server 超时 ({self.DEVICES_TIMEOUT}s)。", "WARNING")
+            except FileNotFoundError:
+                self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
+            except Exception as e:
+                self.log(f"启动 adb server 失败: {e}", "WARNING")
+
     def execute_adb_command(self, cmd_list, check_dev=True, timeout=None):
         """执行 ADB 命令并处理输出 (核心函数)"""
         
@@ -142,6 +180,9 @@ class ADBHelper:
 
         effective_timeout = timeout if timeout is not None else self.SHELL_TIMEOUT
 
+        # 防止本次带管道的调用去冷启动 adb server（Windows 上会死锁，见 _ensure_adb_server）
+        self._ensure_adb_server()
+
         try:
             # 执行命令
             result = subprocess.run(
@@ -169,6 +210,8 @@ class ADBHelper:
 
         except subprocess.TimeoutExpired:
             self.log(f"命令超时 ({effective_timeout}s)，设备可能休眠/未授权或 USB 异常。", "ERROR")
+            # 超时可能是 server 挂了，下次调用前重新确认 server 状态
+            self._adb_server_ready = False
             return False, "命令执行超时"
         except FileNotFoundError:
             self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
@@ -181,6 +224,9 @@ class ADBHelper:
 
     def get_connected_devices(self):
         """获取所有已连接的设备列表"""
+        # force=True：刷新是用户的"救急"入口，即使 server 中途被杀也要先拉起来，
+        # 否则下面带管道的 adb devices 会在 Windows 上冷启动 server 并永久卡死线程
+        self._ensure_adb_server(force=True)
         try:
             result = subprocess.run(
                 [self.adb_cmd, "devices"],
@@ -260,6 +306,7 @@ class ADBHelper:
         if not self.current_device_id:
             return ""
         cmd = [self.adb_cmd, "-s", self.current_device_id] + list(args)
+        self._ensure_adb_server()
         try:
             result = subprocess.run(cmd, **self._get_subprocess_kwargs(timeout=self.SHELL_TIMEOUT))
             return (result.stdout or "").strip()

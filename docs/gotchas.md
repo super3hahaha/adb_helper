@@ -275,6 +275,22 @@ Tkinter 单线程，UI 只能在主线程更新。`subprocess.run(adb ...)` 在�
 
 光做 1 不做 2：UI 仍会冻那几秒。光做 2 不做 1：卡死的线程没人回收，越积越多。
 
+### 工作线程调 `self.after()` 必须等 mainloop 跑起来，否则线程静默死亡
+
+现象（2026-07-15 实修）：start.bat 启动后设备列表永远刷不出来，刷新按钮点了没反应，全局日志停在"正在刷新设备列表..."。
+
+根因是启动时序竞态：`__init__` 里直接调 `refresh_device_list()`，工作线程跑 `adb devices`；**adb server 已在运行时几十毫秒就返回，比 `app.mainloop()` 启动还早**，此时非主线程调 `self.after()` 会抛 `RuntimeError: main thread is not in main loop`，线程当场死亡 → `_refreshing_devices` 永远为 True → 按钮 disabled + 连点保护直接 return。server 冷启动时 `adb devices` 要 ~2s，反而能赢过 mainloop 不触发——所以表现为"有时好有时坏"，adb server 活着时必现。
+
+修复（三层，注意分工）：
+
+1. `__init__` 里的初始刷新改为 `self.after(0, self.refresh_device_list)`，推迟到 mainloop 首轮再发起（根因修复）；
+2. 工作线程里的 `self.after(...)` 挪进 try（窗口关闭时同样会抛），except 里复位 `_refreshing_devices`（根因修复）；
+3. 兜底层来自 661c1ba（zhangshixin，同日独立修复）：`_device_refresh_gen` 递增序号 + 15s 超时强制解锁按钮，迟到的旧线程结果按序号丢弃。**只有它时 bug 仍在**（线程照样死，只是 15s 后能手动重试），但它是防线程意外死亡的最后防线，保留。
+
+**排查此类"线程无声消失"问题，第一站是 `~/adb_helper_crash.log`**——pythonw 下 `main.py` 把 stderr 重定向到了这个文件，daemon 线程的未捕获异常 traceback 都在里面（这次就是靠它一锤定音）。UI 日志面板看不到这类异常（`log_message` 自己也依赖 `after()`，同样会死）。
+
+同场加映的加固（非本次根因，但顺手堵上）：`adb_helper._ensure_adb_server()` 在所有带管道的 adb 调用前用 DEVNULL 句柄显式 `start-server`。Windows 上带 stdout 管道的 adb 调用若冷启动出 server，daemon 理论上会继承管道写句柄导致 `subprocess.run` 连 timeout 都救不回来（kill 后还会再调一次不带超时的 `communicate()` 收尾）。当前机器的 platform-tools 版本实测**不**复现该死锁，但打包版内置 adb / 用户机器上的旧版 adb 不保证，防御留着（server 已运行时 start-server <100ms 幂等）。另外 `get_subprocess_kwargs` 统一加了 `stdin=DEVNULL`（pythonw 下子进程继承的 stdin 句柄无效）。
+
 ### CTkScrollableFrame 的 fit 防抖会导致切换 tab 时首屏宽度"抖一下"
 
 `ui/utils.py` 的 `attach_scrollable` 给 `_fit_frame_dimensions_to_canvas`（把内层 frame 宽度对齐到 canvas）加了 80ms 防抖，目的是解决拖动窗口 resize 时嵌套圆角 frame 重绘卡顿。副作用：tab 第一次显示时，内层 frame 先以"请求宽度"渲染，80ms 后才 snap 到 canvas 真实宽度，肉眼可见地抖一下。

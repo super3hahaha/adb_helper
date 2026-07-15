@@ -85,6 +85,9 @@ class PlatformUtils:
         调用方需自行捕获。用于防止 adb 在设备休眠/未授权/USB 异常时无限阻塞 UI。
         """
         kwargs = {}
+        # adb 子进程一律不需要 stdin。pythonw（无控制台）下不显式给 DEVNULL 的话，
+        # 子进程会继承无效的 stdin 句柄，部分程序读 stdin 时会出错或阻塞。
+        kwargs['stdin'] = subprocess.DEVNULL
         if capture_output:
             kwargs['capture_output'] = True
         if timeout is not None:

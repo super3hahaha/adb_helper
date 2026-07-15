@@ -154,8 +154,12 @@ class MainWindow(TkinterDnD_CTk):
         )
         self.btn_check_update.grid(row=0, column=5)
 
-        # 初始刷新
-        self.refresh_device_list()
+        # 初始刷新。必须推迟到 mainloop 启动后再发起：refresh 的工作线程会调
+        # self.after() 回主线程，若 adb devices 返回得比 mainloop 启动还快
+        # （server 已在运行时只要几十毫秒），非主线程调 after 会抛
+        # "RuntimeError: main thread is not in main loop"，线程当场死亡，
+        # _refreshing_devices 永远为 True → 设备列表刷不出来、刷新按钮失效。
+        self.after(0, self.refresh_device_list)
 
     def action_check_update(self):
         """检查并更新到最新 Release。"""
@@ -206,9 +210,14 @@ class MainWindow(TkinterDnD_CTk):
             pass
 
         def _worker():
-            devices = self.adb_helper.get_connected_devices()
-            # 切回主线程更新 UI
-            self.after(0, lambda: self._apply_device_list(devices, gen))
+            try:
+                devices = self.adb_helper.get_connected_devices()
+                # 切回主线程更新 UI。after 必须也在 try 内：主循环未就绪/窗口已关时
+                # 它会抛 RuntimeError，若不接住，线程死掉后 _refreshing_devices 无人复位
+                self.after(0, lambda: self._apply_device_list(devices, gen))
+            except Exception:
+                # 无法回主线程时至少把并发锁复位，超时兜底会负责恢复按钮状态
+                self._refreshing_devices = False
 
         threading.Thread(target=_worker, daemon=True).start()
 
