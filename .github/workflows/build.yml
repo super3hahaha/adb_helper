@@ -45,9 +45,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # 锁 6.20.0：6.21.0 在 macOS onedir/.app 打包时会把 Frameworks 里的
-          # 二进制在 Resources 下再拷贝一份（codesign 兼容处理），导致体积翻倍
-          # （160MB，实测 Resources/Frameworks 内容完全重复）。6.20.0 无此问题。
+          # 锁版本只为 CI 与本地环境一致、构建可复现（曾因 CI/本地版本漂移
+          # 误诊过打包体积问题）。体积翻倍的真凶是 zip 不加 -y 展开 symlink，
+          # 与 PyInstaller/PySide6 版本无关，升级版本前本地验证一遍即可。
           pip install "pyinstaller==6.20.0"
 
       - name: Download ADB (Windows)
@@ -88,7 +88,10 @@ jobs:
         run: |
           pyinstaller --noconsole --windowed --add-data "bin/mac/adb:bin/mac" --collect-all customtkinter --collect-all tkinterdnd2 --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQuickWidgets --exclude-module PySide6.QtOpenGL --exclude-module PySide6.QtOpenGLWidgets --exclude-module PySide6.QtSql --exclude-module PySide6.QtTest --exclude-module PySide6.QtXml --exclude-module PySide6.QtConcurrent --exclude-module PySide6.QtDBus --exclude-module PySide6.QtDesigner --exclude-module PySide6.QtHelp --exclude-module PySide6.QtSvg --exclude-module PySide6.QtSvgWidgets --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtPrintSupport --name "ADBHelper" main.py
           cd dist
-          zip -r ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
+          # -y 必须加：.app 内 Resources/Frameworks 之间靠 123 个符号链接互连，
+          # 不加 -y 时 zip 会把每个 symlink 展开成真实拷贝，zip 从 39MB 涨到 160MB
+          #（解压后 437MB）。unzip/Finder 归档工具解压都能正常还原 symlink。
+          zip -ry ADBHelper-macOS-${{ github.ref_name }}.zip ADBHelper.app
 
       - name: Get tag annotation
         id: tag_msg

@@ -199,6 +199,17 @@ windows-latest runner 的默认 shell 是 **PowerShell 7**（`pwsh`），写 `MS
 
 Windows runner 自带 Git Bash，`shell: bash` 会走它，不需要额外装。
 
+### 压缩 .app 必须 `zip -ry`，不加 `-y` 体积翻 4 倍
+
+PyInstaller 打出的 `ADBHelper.app` 内部有 ~123 个符号链接（`Contents/Resources` ↔ `Contents/Frameworks` 互连、Qt framework 内 `Versions/Current` 等），`du -sh` 看只有 103MB。`zip -r` **默认把 symlink 展开成真实拷贝**：zip 39MB → 160MB，用户解压后 437MB（Resources/Frameworks 各一份完整拷贝）。加 `-y`（`--symlinks`）保留链接即可，`unzip` / Finder 归档工具解压都能正常还原。
+
+排查此问题时踩过的弯路（都不是原因，别再走）：
+- ❌ 怀疑 PyInstaller 6.21.0 双拷贝行为 → 锁 6.20.0 无效
+- ❌ 怀疑 PySide6-Essentials 6.11.1 → 锁 6.10.3 无效
+- ✅ 特征识别：解压后 Resources 与 Frameworks 内容成对重复、且本地 `du` 与 CI zip 体积对不上 → 先查 symlink
+
+版本锁（pyinstaller==6.20.0、PySide6-Essentials==6.10.3）保留是为了 CI 与本地一致、避免再次版本漂移误诊，升级前本地打包验证一遍即可。
+
 ### `adb shell` 的参数会被设备端 sh 重新解析，路径必须自己单引号化
 
 `subprocess.run([adb, "shell", "rm", "-rf", "/sdcard/foo (bar).mp3"])` 看起来是把路径当独立 argv 传，但 adb client 在发送到设备前会把所有 token 用空格拼成一条字符串，再交给设备端 `/system/bin/sh -c` 解析。结果就是 sh 看到的是：
