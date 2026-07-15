@@ -4,6 +4,9 @@ Pillow
 # "incompatible stubs mechanism" 崩溃。0.4.2 仍带 Tcl 8.6 兼容的 libtkdnd2.9.3.dylib。
 tkinterdnd2==0.4.2
 requests
+# main.py 显式用它的证书文件修复打包版 SSL_CERT_VERIFY_FAILED（见 main.py 注释）。
+# requests 本来就带了这个传递依赖，这里转成直接依赖只是让它别悄悄消失。
+certifi
 pywin32; sys_platform == 'win32'
 # Qt 截图预览子进程（Retina 高清标注窗）。Essentials 只含 QtCore/QtGui/QtWidgets
 # 等核心模块，比完整 PySide6 小得多。缺失时 app 自动回退 Tk 标注窗（模糊但可用）。

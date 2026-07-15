@@ -71,6 +71,18 @@ if sys.stdout is None or getattr(sys, 'frozen', False):
 if getattr(sys, 'frozen', False):
     os.environ['TKDND_LIBRARY'] = os.path.join(sys._MEIPASS, 'tkinterdnd2')
 
+# 修复打包后检查更新报 SSL: CERTIFICATE_VERIFY_FAILED (unable to get local
+# issuer certificate) 的问题：urllib/requests 默认走 OpenSSL 的系统证书目录，
+# 但这个路径是 GitHub Actions 构建机器上的（如 Homebrew 的 openssl@3 目录），
+# 打包冻结后指向的还是那台机器的路径，终端用户机器上根本不存在。
+# 显式指向 certifi 自带的证书文件，不依赖运行时机器的系统证书路径。
+if getattr(sys, 'frozen', False):
+    try:
+        import certifi
+        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    except ImportError:
+        pass
+
 # 确保项目根目录在 sys.path 中
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
