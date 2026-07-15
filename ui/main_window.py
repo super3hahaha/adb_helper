@@ -191,6 +191,13 @@ class MainWindow(TkinterDnD_CTk):
         if getattr(self, "_refreshing_devices", False):
             return
         self._refreshing_devices = True
+        # 每次刷新分配一个递增序号：子线程理论上会在 DEVICES_TIMEOUT 内通过
+        # subprocess 的 timeout 返回，但如果 adb 子进程异常卡死导致线程本身
+        # 永远不返回，按钮会一直 disabled 点不动。下面的超时兜底会强制恢复
+        # 按钮以便重新触发刷新；旧线程即便之后才跑完，靠这个序号在
+        # _apply_device_list 里识别为过时结果并丢弃，不会用旧数据覆盖新结果。
+        self._device_refresh_gen = getattr(self, "_device_refresh_gen", 0) + 1
+        gen = self._device_refresh_gen
 
         self.log_message("正在刷新设备列表...", "INFO")
         try:
@@ -201,12 +208,32 @@ class MainWindow(TkinterDnD_CTk):
         def _worker():
             devices = self.adb_helper.get_connected_devices()
             # 切回主线程更新 UI
-            self.after(0, lambda: self._apply_device_list(devices))
+            self.after(0, lambda: self._apply_device_list(devices, gen))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _apply_device_list(self, devices):
+        # 兜底：DEVICES_TIMEOUT(10s) 是 subprocess 自身的超时，正常情况下线程
+        # 会在此之前完成。留出余量到 15s 还没结束，就当作卡死处理。
+        self.after(15000, lambda: self._on_refresh_timeout(gen))
+
+    def _on_refresh_timeout(self, gen):
+        """刷新超时兜底：强制恢复按钮，避免线程卡死导致按钮永久不可点。"""
+        if gen != getattr(self, "_device_refresh_gen", None):
+            return  # 已经有更新的刷新在跑，或本次已正常结束
+        if not getattr(self, "_refreshing_devices", False):
+            return  # 已经正常结束
+        self.log_message("刷新设备列表超时，已强制恢复按钮（原请求可能仍在后台运行）", "WARNING")
+        self._refreshing_devices = False
+        try:
+            self.btn_refresh_devices.configure(state="normal")
+        except Exception:
+            pass
+
+    def _apply_device_list(self, devices, gen=None):
         """在主线程根据子线程取回的设备列表更新下拉框等控件。"""
+        # 期间又点了一次刷新（gen 变了），这次是过时结果，丢弃，避免覆盖新数据
+        if gen is not None and gen != getattr(self, "_device_refresh_gen", None):
+            return
         self._refreshing_devices = False
         # 窗口可能已关闭
         if not self.winfo_exists():
