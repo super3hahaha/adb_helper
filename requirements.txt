@@ -7,4 +7,6 @@ requests
 pywin32; sys_platform == 'win32'
 # Qt 截图预览子进程（Retina 高清标注窗）。Essentials 只含 QtCore/QtGui/QtWidgets
 # 等核心模块，比完整 PySide6 小得多。缺失时 app 自动回退 Tk 标注窗（模糊但可用）。
-PySide6-Essentials
+# 锁 6.10.3：6.11.1 经 PyInstaller 打 macOS .app 时 Resources/Frameworks 出现
+# 两份相同二进制拷贝，产物从 103MB 翻到 437MB（zip 160MB）。升级前先本地验证。
+PySide6-Essentials==6.10.3
