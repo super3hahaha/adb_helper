@@ -9,8 +9,7 @@
 - 支持明文 HTTP：把发给代理的绝对 URL 请求行改写成相对路径再转发。
 - 延迟 delay_ms：每条**新连接**建立后注入一次（模拟高 RTT / 首字节延迟），
   不逐 chunk 累加，避免大流量下延迟雪崩把连接彻底拖死。
-- 限速 rate_kbytes：令牌桶思路，按 chunk 大小 sleep 到目标速率（单位 KB/s，1KB=1024B，
-  与界面实时速率显示同进制，方便直接对比）。
+- 限速 rate_kbytes：令牌桶思路，按 chunk 大小 sleep 到目标速率（单位 KB/s，1KB=1024B）。
 - 丢包 loss_pct：每条**新连接**掷一次骰子，命中就直接拒绝（模拟该次请求因丢包
   彻底失败）。这是最可控、最好解释的语义 —— 直接对应「请求失败率」，方便测 App
   的重试 / 超时 / 失败兜底逻辑。
@@ -41,13 +40,6 @@ class ThrottleProxy:
         self._host = None            # 对外可达的本机 IP
         self._port = None            # 实际监听端口
 
-        # 累计吞吐字节数（up=设备->外网，down=外网->设备）。
-        # pump 线程 += / GUI 线程读，单个 int 读写靠 GIL 原子，够统计用。
-        self._up_bytes = 0
-        self._down_bytes = 0
-        self._last_up = 0            # sample() 上次快照，用于算增量
-        self._last_down = 0
-
         # 全局令牌桶游标：所有连接共享，实现「整机总带宽」限速而非每条连接各自限。
         # 值为 loop.time() 坐标下「下一次可发送的时刻」，上下行各一个池。
         # 全在单线程事件循环里读改，协程 await 之间原子，无需锁。
@@ -58,18 +50,6 @@ class ThrottleProxy:
 
     def is_running(self):
         return self._thread is not None and self._thread.is_alive()
-
-    def sample(self):
-        """返回自上次调用以来的字节增量 (up_delta, down_delta)。
-
-        GUI 每隔固定时间调一次，用增量 / 实际间隔即可算出实时速率。
-        读快照再更新 last，中间 pump 线程可能又 += 少量，统计场景可忽略。
-        """
-        up, down = self._up_bytes, self._down_bytes
-        d_up = up - self._last_up
-        d_down = down - self._last_down
-        self._last_up, self._last_down = up, down
-        return d_up, d_down
 
     def update(self, delay_ms=None, rate_kbytes=None, loss_pct=None):
         """实时更新弱网参数。运行中调用立即生效（下一条连接 / 下一个 chunk）。
@@ -134,9 +114,7 @@ class ThrottleProxy:
         if not self.is_running() or self._port is None:
             self._thread = None
             raise RuntimeError("限速代理启动超时")
-        # 重置吞吐计数与令牌桶游标，让本次会话从干净状态开始
-        self._up_bytes = self._down_bytes = 0
-        self._last_up = self._last_down = 0
+        # 重置令牌桶游标，让本次会话从干净状态开始
         self._tb_next_up = self._tb_next_down = 0.0
         return self._host, self._port
 
@@ -286,7 +264,7 @@ class ThrottleProxy:
                     pass
 
     async def _pump(self, reader, writer, direction):
-        """单向搬运字节，按 rate_kbytes(KB/s) 限速，并累计吞吐。direction: 'up'/'down'。"""
+        """单向搬运字节，按 rate_kbytes(KB/s) 限速。direction: 'up'/'down'。"""
         try:
             while True:
                 chunk = await reader.read(BUFSIZE)
@@ -311,11 +289,6 @@ class ThrottleProxy:
                         await asyncio.sleep(wait)
                 writer.write(chunk)
                 await writer.drain()
-                # 统计放在 drain 之后：反映真正搬过去的量（受限速节流后的实际速率）
-                if direction == "up":
-                    self._up_bytes += len(chunk)
-                else:
-                    self._down_bytes += len(chunk)
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         except Exception:

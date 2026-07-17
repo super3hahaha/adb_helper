@@ -2,7 +2,6 @@ import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import threading
 import subprocess
-import time
 from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.components.tooltip import ModernTooltip
 from core.throttle_proxy import ThrottleProxy
@@ -17,8 +16,7 @@ class ToolsTab(ctk.CTkFrame):
 
         # 精确弱网限速代理（延迟到首次开启时才真正 start）
         self.shaper = ThrottleProxy(log=self.log)
-        self._shaper_speed_job = None   # 实时速率轮询的 after id
-        self._shaper_last_ts = None     # 上次采样时间戳（monotonic）
+        self._shaper_applied = None   # 上次已推给代理的 (delay, rate, loss)，用于去重
 
         self.setup_ui()
 
@@ -197,11 +195,26 @@ class ToolsTab(ctk.CTkFrame):
 
         # 1.5 弱网/断网模拟
         frame_proxy = ctk.CTkFrame(self.container_simulation)
-        frame_proxy.pack(pady=3, padx=10, fill="x")
+        frame_proxy.pack(pady=2, padx=10, fill="x")
 
         proxy_header = ctk.CTkFrame(frame_proxy, fg_color="transparent")
-        proxy_header.pack(pady=(4, 1), padx=8, fill="x")
+        proxy_header.pack(pady=(2, 1), padx=8, fill="x")
         ctk.CTkLabel(proxy_header, text="弱网/断网模拟", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.proxy_help_btn = ctk.CTkButton(proxy_header, text="?", width=22, height=22, corner_radius=11, fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.proxy_help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.proxy_help_btn, sections=[
+            ("开启高延迟/慢网",
+             "把系统全局 HTTP 代理指向一个连不上的假地址，App 发 HTTP(S) 请求时会去连这个无效代理，卡着重试，表现为“慢、高延迟”。\n"
+             "只作用在代理层，只影响走代理的 HTTP(S) 流量；不走代理的直连/非 HTTP 流量可能还是通的，相对较轻。\n"
+             "不能设置具体延迟数值，只是一种粗糙的“卡顿”模拟。"),
+            ("开启网络超时",
+             "把 Android 的 Private DNS 强制指向一个不存在的域名，导致设备所有 DNS 解析失败。\n"
+             "作用在 DNS 解析层，几乎所有联网请求都会解析失败、完不成，表现为“断网/超时”，比高延迟/慢网更彻底。"),
+            ("精确弱网模拟",
+             "起一个真正能转发流量的本地代理（非假地址），设备把 HTTP(S) 流量指过来后，在转发字节的过程中人为注入可配置的延迟(ms)/限速(KB/s)/丢包率(%)。\n"
+             "和上面两个“制造故障”的取巧方案不同，这个能设具体参数、精确复现某种网络质量，而不是简单地卡死或断网。\n"
+             "同样只覆盖走代理的 HTTP(S) 流量，UDP/QUIC、直连流量不受影响。"),
+        ])
         self.lbl_proxy_status = ctk.CTkLabel(proxy_header, text="当前状态：检测中...", font=ctk.CTkFont(size=11), text_color="gray", cursor="hand2")
         self.lbl_proxy_status.pack(side="left", padx=(8, 0))
         # 点击状态文字 = 手动重新从设备读取 settings 并刷新
@@ -215,7 +228,7 @@ class ToolsTab(ctk.CTkFrame):
 
         # 第二行：假 DNS（模拟网络超时 / 彻底断网）
         row_dns = ctk.CTkFrame(frame_proxy, fg_color="transparent")
-        row_dns.pack(pady=(0, 4), padx=8, fill="x")
+        row_dns.pack(pady=(0, 2), padx=8, fill="x")
         ctk.CTkButton(row_dns, text="开启网络超时", height=sim_btn_h, command=self.action_enable_fake_dns).pack(side="left", expand=True, fill="x", padx=(0, 2))
         ctk.CTkButton(row_dns, text="恢复正常DNS", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.action_disable_fake_dns).pack(side="right", expand=True, fill="x", padx=(2, 0))
 
@@ -227,45 +240,51 @@ class ToolsTab(ctk.CTkFrame):
 
         # 2. 电池模拟
         frame_bat = ctk.CTkFrame(self.container_simulation)
-        frame_bat.pack(pady=3, padx=10, fill="x")
+        frame_bat.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_bat, text="电池状态模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+        ctk.CTkLabel(frame_bat, text="电池状态模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(2, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_bat, text="模拟低电量 (10%)", height=sim_btn_h, command=self.adb_helper.sim_low_battery).pack(pady=1, padx=8, fill="x")
-        ctk.CTkButton(frame_bat, text="模拟充满电 (100%)", height=sim_btn_h, command=self.adb_helper.sim_full_battery).pack(pady=1, padx=8, fill="x")
-        ctk.CTkButton(frame_bat, text="恢复真实电量", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.adb_helper.reset_battery).pack(pady=(1, 4), padx=8, fill="x")
+        row_bat = ctk.CTkFrame(frame_bat, fg_color="transparent")
+        row_bat.pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(row_bat, text="模拟低电量 (10%)", height=sim_btn_h, command=self.adb_helper.sim_low_battery).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(row_bat, text="模拟充满电 (100%)", height=sim_btn_h, command=self.adb_helper.sim_full_battery).pack(side="right", expand=True, fill="x", padx=(2, 0))
+        ctk.CTkButton(frame_bat, text="恢复真实电量", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.adb_helper.reset_battery).pack(pady=(1, 2), padx=8, fill="x")
 
         # 2.5 来电模拟
         frame_call = ctk.CTkFrame(self.container_simulation)
-        frame_call.pack(pady=3, padx=10, fill="x")
+        frame_call.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(2, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", height=sim_btn_h, command=self.adb_helper.sim_incoming_call).pack(pady=(1, 4), padx=8, fill="x")
+        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", height=sim_btn_h, command=self.adb_helper.sim_incoming_call).pack(pady=(1, 2), padx=8, fill="x")
 
         # 3. 网络模拟
         frame_net = ctk.CTkFrame(self.container_simulation)
-        frame_net.pack(pady=3, padx=10, fill="x")
+        frame_net.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_net, text="Wi-Fi 模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+        ctk.CTkLabel(frame_net, text="Wi-Fi 模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(2, 1), anchor="w", padx=8)
 
         grid_net = ctk.CTkFrame(frame_net, fg_color="transparent")
-        grid_net.pack(pady=(1, 4), padx=8, fill="x")
+        grid_net.pack(pady=(1, 2), padx=8, fill="x")
         ctk.CTkButton(grid_net, text="断开 Wi-Fi", height=sim_btn_h, command=self.adb_helper.wifi_disable).pack(side="left", expand=True, fill="x", padx=(0, 2))
         ctk.CTkButton(grid_net, text="连接 Wi-Fi", height=sim_btn_h, command=self.adb_helper.wifi_enable).pack(side="right", expand=True, fill="x", padx=(2, 0))
 
         # 4. 铃声试听
         frame_ringtone = ctk.CTkFrame(self.container_simulation)
-        frame_ringtone.pack(pady=3, padx=10, fill="x")
+        frame_ringtone.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_ringtone, text="铃声试听", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
+        ctk.CTkLabel(frame_ringtone, text="铃声试听", font=ctk.CTkFont(weight="bold")).pack(pady=(2, 1), anchor="w", padx=8)
 
-        ctk.CTkButton(frame_ringtone, text="试听来电铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("ringtone")).pack(pady=1, padx=8, fill="x")
-        ctk.CTkButton(frame_ringtone, text="试听通知铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("notification_sound")).pack(pady=1, padx=8, fill="x")
-        ctk.CTkButton(frame_ringtone, text="试听闹钟铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("alarm_alert")).pack(pady=1, padx=8, fill="x")
+        row_ring1 = ctk.CTkFrame(frame_ringtone, fg_color="transparent")
+        row_ring1.pack(pady=1, padx=8, fill="x")
+        ctk.CTkButton(row_ring1, text="试听来电铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("ringtone")).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(row_ring1, text="试听通知铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("notification_sound")).pack(side="right", expand=True, fill="x", padx=(2, 0))
 
-        self.btn_contact_ringtone = ctk.CTkButton(frame_ringtone, text="试听联系人铃声", height=sim_btn_h, command=self.action_contact_ringtone)
-        self.btn_contact_ringtone.pack(pady=(1, 4), padx=8, fill="x")
+        row_ring2 = ctk.CTkFrame(frame_ringtone, fg_color="transparent")
+        row_ring2.pack(pady=(1, 2), padx=8, fill="x")
+        ctk.CTkButton(row_ring2, text="试听闹钟铃声", height=sim_btn_h, command=lambda: self.action_play_ringtone("alarm_alert")).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        self.btn_contact_ringtone = ctk.CTkButton(row_ring2, text="试听联系人铃声", height=sim_btn_h, command=self.action_contact_ringtone)
+        self.btn_contact_ringtone.pack(side="right", expand=True, fill="x", padx=(2, 0))
 
     def action_play_ringtone(self, sound_type):
         def _thread():
@@ -673,75 +692,44 @@ class ToolsTab(ctk.CTkFrame):
 
     # ==================== 精确弱网模拟（限速代理） ====================
 
-    # 预设档位：(延迟ms, 限速KB/s, 丢包%)。限速 0 = 不限速
-    SHAPER_PRESETS = {
-        "正常": (0, 0, 0),
-        "4G": (60, 1500, 0),
-        "3G": (200, 250, 1),
-        "2G": (500, 32, 5),
-        "极差": (1000, 16, 20),
-    }
-
     def _init_shaper_ui(self, sim_btn_h):
         frame = ctk.CTkFrame(self.container_simulation)
-        frame.pack(pady=3, padx=10, fill="x")
+        frame.pack(pady=2, padx=10, fill="x")
 
         # 标题行 + 状态
         header = ctk.CTkFrame(frame, fg_color="transparent")
-        header.pack(pady=(4, 1), padx=8, fill="x")
+        header.pack(pady=(2, 1), padx=8, fill="x")
         ctk.CTkLabel(header, text="精确弱网模拟", font=ctk.CTkFont(weight="bold")).pack(side="left")
         self.lbl_shaper_status = ctk.CTkLabel(header, text="未开启", font=ctk.CTkFont(size=11), text_color="gray")
         self.lbl_shaper_status.pack(side="left", padx=(8, 0))
-        # 实时速率（经代理的吞吐），仅代理运行时显示
-        self.lbl_shaper_speed = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=11), text_color="#2e7d32")
-        self.lbl_shaper_speed.pack(side="right")
-
-        ctk.CTkLabel(
-            frame,
-            text="设备流量经本机代理，可设具体延迟/限速/丢包（应用层近似，仅 HTTP/HTTPS）",
-            font=ctk.CTkFont(size=10), text_color="gray", wraplength=340, justify="left",
-        ).pack(pady=(0, 3), padx=8, anchor="w")
-
-        # 预设档位按钮
-        row_preset = ctk.CTkFrame(frame, fg_color="transparent")
-        row_preset.pack(pady=(0, 3), padx=8, fill="x")
-        for name in self.SHAPER_PRESETS:
-            ctk.CTkButton(
-                row_preset, text=name, height=24, width=10,
-                fg_color="#4a4a4a", hover_color="#5a5a5a",
-                command=lambda n=name: self._apply_shaper_preset(n),
-            ).pack(side="left", expand=True, fill="x", padx=1)
 
         # 参数输入行：延迟 / 限速 / 丢包
         row_params = ctk.CTkFrame(frame, fg_color="transparent")
-        row_params.pack(pady=(0, 3), padx=8, fill="x")
-        self.var_delay = ctk.StringVar(value="200")
-        self.var_rate = ctk.StringVar(value="250")
-        self.var_loss = ctk.StringVar(value="0")
+        row_params.pack(pady=(0, 2), padx=8, fill="x")
+        self.var_delay = ctk.StringVar(value="500")
+        self.var_rate = ctk.StringVar(value="32")
+        self.var_loss = ctk.StringVar(value="5")
         for label, var in (("延迟ms", self.var_delay), ("限速KB/s", self.var_rate), ("丢包%", self.var_loss)):
             cell = ctk.CTkFrame(row_params, fg_color="transparent")
             cell.pack(side="left", expand=True, fill="x", padx=1)
             ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10), text_color="gray").pack(anchor="w")
-            ctk.CTkEntry(cell, textvariable=var, height=26).pack(fill="x")
+            entry = ctk.CTkEntry(cell, textvariable=var, height=26)
+            entry.pack(fill="x")
+            # 代理运行中时，改完参数（失焦或回车）即自动生效，无需再点按钮
+            entry.bind("<FocusOut>", self._on_shaper_param_change)
+            entry.bind("<Return>", self._on_shaper_param_change)
 
         # 操作按钮行
         row_btns = ctk.CTkFrame(frame, fg_color="transparent")
-        row_btns.pack(pady=(0, 4), padx=8, fill="x")
-        ctk.CTkButton(row_btns, text="开启/应用限速代理", height=sim_btn_h, command=self.action_start_shaper).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        row_btns.pack(pady=(0, 2), padx=8, fill="x")
+        ctk.CTkButton(row_btns, text="开启限速代理", height=sim_btn_h, command=self.action_start_shaper).pack(side="left", expand=True, fill="x", padx=(0, 2))
         ctk.CTkButton(row_btns, text="关闭限速代理", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.action_stop_shaper).pack(side="right", expand=True, fill="x", padx=(2, 0))
 
-    def _apply_shaper_preset(self, name):
-        delay, rate, loss = self.SHAPER_PRESETS[name]
-        self.var_delay.set(str(delay))
-        self.var_rate.set(str(rate))
-        self.var_loss.set(str(loss))
-        # 运行中则立即生效
-        if self.shaper.is_running():
-            self.shaper.update(delay_ms=delay, rate_kbytes=rate, loss_pct=loss)
-            self.log(f"已应用弱网预设[{name}]: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
+    def _read_shaper_params(self, silent=False):
+        """读取并校验三个输入框，返回 (delay, rate, loss) 或 None。
 
-    def _read_shaper_params(self):
-        """读取并校验三个输入框，返回 (delay, rate, loss) 或 None（校验失败已弹提示）。"""
+        silent=True 时校验失败不弹窗（用于失焦/回车自动生效，避免频繁打扰）。
+        """
         try:
             delay = int(float(self.var_delay.get()))
             rate = int(float(self.var_rate.get()))
@@ -750,8 +738,24 @@ class ToolsTab(ctk.CTkFrame):
                 raise ValueError
             return delay, rate, loss
         except (ValueError, TypeError):
-            messagebox.showwarning("参数无效", "延迟/限速需为 ≥0 的数字，丢包为 0~100 的数字")
+            if not silent:
+                messagebox.showwarning("参数无效", "延迟/限速需为 ≥0 的数字，丢包为 0~100 的数字")
             return None
+
+    def _on_shaper_param_change(self, event=None):
+        """代理运行中时，输入框失焦/回车即把最新参数推给代理。
+
+        非法值静默忽略；与上次已应用值相同则不重复推送/刷日志。
+        """
+        if not self.shaper.is_running():
+            return
+        params = self._read_shaper_params(silent=True)
+        if params is None or params == self._shaper_applied:
+            return
+        delay, rate, loss = params
+        self.shaper.update(delay_ms=delay, rate_kbytes=rate, loss_pct=loss)
+        self._shaper_applied = params
+        self.log(f"弱网参数已更新: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
 
     def action_start_shaper(self):
         params = self._read_shaper_params()
@@ -767,6 +771,7 @@ class ToolsTab(ctk.CTkFrame):
         def _thread():
             try:
                 self.shaper.update(delay_ms=delay, rate_kbytes=rate, loss_pct=loss)
+                self._shaper_applied = (delay, rate, loss)
                 host, port = self.shaper.start()  # 幂等：已运行则只更新参数
                 self.log(f"限速代理监听 {host}:{port}", "INFO")
 
@@ -778,7 +783,6 @@ class ToolsTab(ctk.CTkFrame):
                     self.log(f"弱网参数: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
                     self.after(0, lambda: self.lbl_shaper_status.configure(
                         text="生效中", text_color="#2e7d32"))
-                    self.after(0, self._start_speed_monitor)
                 self.refresh_proxy_status()
             except Exception as e:
                 self.log(f"开启限速代理失败: {e}", "ERROR")
@@ -786,8 +790,6 @@ class ToolsTab(ctk.CTkFrame):
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_stop_shaper(self):
-        self._stop_speed_monitor()
-
         def _thread():
             # 先清设备代理，再关本机服务，避免设备短暂指向已关闭端口
             self._run_adb_settings_cmd(["put", "global", "http_proxy", ":0"], "关闭限速代理")
@@ -798,45 +800,6 @@ class ToolsTab(ctk.CTkFrame):
             self.after(0, lambda: self.lbl_shaper_status.configure(text="未开启", text_color="gray"))
             self.refresh_proxy_status()
         threading.Thread(target=_thread, daemon=True).start()
-
-    # ---------- 实时速率显示 ----------
-
-    @staticmethod
-    def _fmt_speed(bytes_per_sec):
-        if bytes_per_sec < 1024:
-            return f"{bytes_per_sec:.0f} B/s"
-        if bytes_per_sec < 1024 * 1024:
-            return f"{bytes_per_sec / 1024:.1f} KB/s"
-        return f"{bytes_per_sec / (1024 * 1024):.2f} MB/s"
-
-    def _start_speed_monitor(self):
-        # 先清掉基线，避免第一格把开启前的累计一次性冲进来
-        self.shaper.sample()
-        self._shaper_last_ts = time.monotonic()
-        self._tick_speed()
-
-    def _tick_speed(self):
-        if not self.shaper.is_running():
-            self.lbl_shaper_speed.configure(text="")
-            self._shaper_speed_job = None
-            return
-        now = time.monotonic()
-        dt = max(1e-3, now - (self._shaper_last_ts or now))
-        self._shaper_last_ts = now
-        up, down = self.shaper.sample()
-        self.lbl_shaper_speed.configure(
-            text=f"↑{self._fmt_speed(up / dt)}  ↓{self._fmt_speed(down / dt)}"
-        )
-        self._shaper_speed_job = self.after(1000, self._tick_speed)
-
-    def _stop_speed_monitor(self):
-        if self._shaper_speed_job is not None:
-            try:
-                self.after_cancel(self._shaper_speed_job)
-            except Exception:
-                pass
-            self._shaper_speed_job = None
-        self.lbl_shaper_speed.configure(text="")
 
     def cleanup_shaper(self):
         """主窗口关闭时调用：若代理在跑，清掉设备 http_proxy 并停服务。"""
