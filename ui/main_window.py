@@ -457,6 +457,13 @@ class MainWindow(TkinterDnD_CTk):
                 if win and win.winfo_exists():
                     win.on_close()
 
+        # 关闭精确弱网限速代理，并清理设备残留的 http_proxy
+        if hasattr(self, 'tab_tools'):
+            try:
+                self.tab_tools.cleanup_shaper()
+            except Exception:
+                pass
+
         # 终止 adb_helper 管理的子进程
         if hasattr(self, 'adb_helper'):
             self.adb_helper.stop_logcat()

@@ -11,6 +11,7 @@ adb_helper/
 │   ├── config.py            # 应用级常量：APP_VERSION / APP_NAME / GITHUB_REPO
 │   ├── config_manager.py    # 配置读写与持久化
 │   ├── screen_info_cache.py # 屏幕信息缓存（per-device + per-rotation，落盘到 appdata）
+│   ├── throttle_proxy.py    # 精确弱网限速代理（纯 asyncio，注入延迟/限速/丢包，后台线程）
 │   ├── file_helper.py       # 文件与临时目录操作
 │   ├── platform_utils.py    # 跨平台适配工具
 │   └── updater.py           # GitHub Releases 版本检查、下载、Windows 自动替换脚本

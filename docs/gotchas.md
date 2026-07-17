@@ -326,3 +326,19 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 - `screenshot_preview/__init__.py` 必须保持 **PEP 562 惰性导出**：Qt 子进程要 import 包内的 `shared`/`export`（纯 PIL），eager import 会把 ctk/tkinter 拉进 Qt 进程
 - 重截不让子进程碰 adb，走 IPC 回主进程调 `adb_helper.take_screenshot`（serial/别名/尺寸后缀天然正确）；`on_complete` 在 adb 工作线程触发，launcher 里只做带锁的 stdin 写，不碰 Tk
 - **QGraphicsView 平移受滚动范围钳制**：sceneRect=图像时，图像整幅可见（初始 fit 缩放）滚动范围为 0，✋/空格平移完全拖不动。解法是 `update_scene_margins()` 给场景四周扩一圈视口大小的余量（缩放/视口 resize 时都要更新），恢复 Tk 版自由平移。扩余量后滚动条必须 `ScrollBarAlwaysOn`：按需显示的话，初始 fit 按"无滚动条视口"计算 → 滚动条随后出现挤掉一条边 → 图像底部被遮一截。另：所有按钮/滑块要 `setFocusPolicy(NoFocus)`，否则空格会触发聚焦按钮而不是临时平移
+
+## 弱网模拟
+
+### 「精确弱网」限速代理是应用层近似，不是内核级 tc/netem
+
+`core/throttle_proxy.py` 起一个本地代理，把设备 `http_proxy` 指过来，在转发字节时注入延迟/限速/丢包。三个参数的语义都是**刻意选的可控近似**，不是物理网络行为，改前先懂：
+
+- **只覆盖走系统代理的 HTTP/HTTPS 流量**。UDP/QUIC（HTTP/3）、非代理感知的直连、VPN 内流量都**绕过**它。很多 App 会 QUIC 优先 → 看着"限速没生效"其实是走了 QUIC。这是代理层方案的天花板，想全覆盖只能上 tc/netem（需 root，且量产 ROM 多半没编 `sch_netem`）。
+- **延迟 = 每条新连接注入一次**（建连后、回 CONNECT 200 前 sleep），模拟高 RTT/首字节延迟。**不逐 chunk 加**——逐 chunk 会在大流量下累加雪崩，把连接彻底拖死，反而不像"高延迟"像"断网"。
+- **丢包 = 每条新连接掷一次骰子**，命中直接拒绝整条连接（≈"请求失败率"），不是逐包概率丢弃。逐包丢会破坏 TLS record 让连接必挂，且失败率随 chunk 数飘。当前语义直接对应 App 的重试/超时/兜底测试。
+- **限速单位是 KB/s，1KB=1024B**（`bytes_per_sec = rate_kbytes*1024`）。当初用 kbps(千比特/秒)后发现用户拿它跟"下载速度 KB/s"直接比、以为没生效（差 8 倍），2026-07 改成 KB/s，且**刻意用 1024 进制**跟界面实时速率显示（`_fmt_speed` 也 /1024）对齐，输入 32 → 下行实测就该 ~32KB/s，一眼可验。别改回 kbps 或 1000 进制。
+- **限速是「整机全局」的，不是每条连接各自限**。用全局令牌桶（`_tb_next_up/_tb_next_down` 两个共享游标，值=`loop.time()` 坐标下"下次可发时刻"）：每块要占用的发送时长排到游标之后、游标累进，并发连接就被串行化到同一条时间线，总吞吐不超设定值。早期版本是 per-connection `sleep(len/bps)`，导致"设 40 但开 N 条连接总吞吐≈40×N"，反直觉（连接越多越快，越不像弱网）——已废弃，别改回。游标全在单线程事件循环里读改，`start` 计算到赋值之间无 `await`，协程不抢占，天然原子，无需锁。上下行各一个池（下行限速不被上行占用）。
+- HTTPS 是 **CONNECT 隧道盲转字节，不解密**，所以无需装 CA 证书；代价是看不到/改不了报文内容（本功能也不需要）。
+- 事件循环跑在**后台线程**（`asyncio.new_event_loop` + `run_forever`），GUI 主线程通过 `start/stop/update` 操作，参数用普通 dict 共享靠 GIL。`stop()` 用 `call_soon_threadsafe(loop.stop)` 跨线程停，不能直接 `loop.stop()`。
+- 退出/关代理**必须先清设备 `http_proxy :0` 再关本机服务**，否则设备短暂指向已关闭端口 = 假性断网。主窗口 `on_closing` 已挂 `tab_tools.cleanup_shaper()` 兜底，但那是 best-effort（拿当前 device_id 直清），换设备后残留仍需手动"关闭限速代理"。
+- 界面上的**实时速率(↑↓)只统计"经过代理"的流量**，且是**限速节流后的实际吞吐**（计数放在 `drain()` 之后）。所以：手机没在传数据时显示 0（正常，不是没生效）；QUIC/直连的流量不计入；限速生效时下行会稳定压在设定的 KB/s 值附近（同单位同进制，直接可比），这正是验证限速的最直接指标。`ThrottleProxy.sample()` 返回自上次调用以来的字节增量，GUI 每秒调一次除以实际间隔算速率。

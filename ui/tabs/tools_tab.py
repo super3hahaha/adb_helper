@@ -2,8 +2,10 @@ import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import threading
 import subprocess
+import time
 from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.components.tooltip import ModernTooltip
+from core.throttle_proxy import ThrottleProxy
 
 class ToolsTab(ctk.CTkFrame):
     def __init__(self, parent, adb_helper, config_manager, log_func):
@@ -12,7 +14,12 @@ class ToolsTab(ctk.CTkFrame):
         self.adb_helper = adb_helper
         self.config_manager = config_manager
         self.log = log_func
-        
+
+        # 精确弱网限速代理（延迟到首次开启时才真正 start）
+        self.shaper = ThrottleProxy(log=self.log)
+        self._shaper_speed_job = None   # 实时速率轮询的 after id
+        self._shaper_last_ts = None     # 上次采样时间戳（monotonic）
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -214,6 +221,9 @@ class ToolsTab(ctk.CTkFrame):
 
         # 首次加载时检测一次当前代理 / DNS 状态
         self.after(500, self.refresh_proxy_status)
+
+        # 1.6 精确弱网模拟（本机限速代理，可设具体延迟/限速/丢包）
+        self._init_shaper_ui(sim_btn_h)
 
         # 2. 电池模拟
         frame_bat = ctk.CTkFrame(self.container_simulation)
@@ -660,6 +670,192 @@ class ToolsTab(ctk.CTkFrame):
                     self.log(f"状态查询异常: {e}", "ERROR")
                 self.after(0, lambda: self.lbl_proxy_status.configure(text="当前状态：未知", text_color="gray"))
         threading.Thread(target=_thread, daemon=True).start()
+
+    # ==================== 精确弱网模拟（限速代理） ====================
+
+    # 预设档位：(延迟ms, 限速KB/s, 丢包%)。限速 0 = 不限速
+    SHAPER_PRESETS = {
+        "正常": (0, 0, 0),
+        "4G": (60, 1500, 0),
+        "3G": (200, 250, 1),
+        "2G": (500, 32, 5),
+        "极差": (1000, 16, 20),
+    }
+
+    def _init_shaper_ui(self, sim_btn_h):
+        frame = ctk.CTkFrame(self.container_simulation)
+        frame.pack(pady=3, padx=10, fill="x")
+
+        # 标题行 + 状态
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(pady=(4, 1), padx=8, fill="x")
+        ctk.CTkLabel(header, text="精确弱网模拟", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.lbl_shaper_status = ctk.CTkLabel(header, text="未开启", font=ctk.CTkFont(size=11), text_color="gray")
+        self.lbl_shaper_status.pack(side="left", padx=(8, 0))
+        # 实时速率（经代理的吞吐），仅代理运行时显示
+        self.lbl_shaper_speed = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=11), text_color="#2e7d32")
+        self.lbl_shaper_speed.pack(side="right")
+
+        ctk.CTkLabel(
+            frame,
+            text="设备流量经本机代理，可设具体延迟/限速/丢包（应用层近似，仅 HTTP/HTTPS）",
+            font=ctk.CTkFont(size=10), text_color="gray", wraplength=340, justify="left",
+        ).pack(pady=(0, 3), padx=8, anchor="w")
+
+        # 预设档位按钮
+        row_preset = ctk.CTkFrame(frame, fg_color="transparent")
+        row_preset.pack(pady=(0, 3), padx=8, fill="x")
+        for name in self.SHAPER_PRESETS:
+            ctk.CTkButton(
+                row_preset, text=name, height=24, width=10,
+                fg_color="#4a4a4a", hover_color="#5a5a5a",
+                command=lambda n=name: self._apply_shaper_preset(n),
+            ).pack(side="left", expand=True, fill="x", padx=1)
+
+        # 参数输入行：延迟 / 限速 / 丢包
+        row_params = ctk.CTkFrame(frame, fg_color="transparent")
+        row_params.pack(pady=(0, 3), padx=8, fill="x")
+        self.var_delay = ctk.StringVar(value="200")
+        self.var_rate = ctk.StringVar(value="250")
+        self.var_loss = ctk.StringVar(value="0")
+        for label, var in (("延迟ms", self.var_delay), ("限速KB/s", self.var_rate), ("丢包%", self.var_loss)):
+            cell = ctk.CTkFrame(row_params, fg_color="transparent")
+            cell.pack(side="left", expand=True, fill="x", padx=1)
+            ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10), text_color="gray").pack(anchor="w")
+            ctk.CTkEntry(cell, textvariable=var, height=26).pack(fill="x")
+
+        # 操作按钮行
+        row_btns = ctk.CTkFrame(frame, fg_color="transparent")
+        row_btns.pack(pady=(0, 4), padx=8, fill="x")
+        ctk.CTkButton(row_btns, text="开启/应用限速代理", height=sim_btn_h, command=self.action_start_shaper).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ctk.CTkButton(row_btns, text="关闭限速代理", height=sim_btn_h, fg_color="#c42b1c", hover_color="#8a1f15", command=self.action_stop_shaper).pack(side="right", expand=True, fill="x", padx=(2, 0))
+
+    def _apply_shaper_preset(self, name):
+        delay, rate, loss = self.SHAPER_PRESETS[name]
+        self.var_delay.set(str(delay))
+        self.var_rate.set(str(rate))
+        self.var_loss.set(str(loss))
+        # 运行中则立即生效
+        if self.shaper.is_running():
+            self.shaper.update(delay_ms=delay, rate_kbytes=rate, loss_pct=loss)
+            self.log(f"已应用弱网预设[{name}]: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
+
+    def _read_shaper_params(self):
+        """读取并校验三个输入框，返回 (delay, rate, loss) 或 None（校验失败已弹提示）。"""
+        try:
+            delay = int(float(self.var_delay.get()))
+            rate = int(float(self.var_rate.get()))
+            loss = float(self.var_loss.get())
+            if delay < 0 or rate < 0 or not (0 <= loss <= 100):
+                raise ValueError
+            return delay, rate, loss
+        except (ValueError, TypeError):
+            messagebox.showwarning("参数无效", "延迟/限速需为 ≥0 的数字，丢包为 0~100 的数字")
+            return None
+
+    def action_start_shaper(self):
+        params = self._read_shaper_params()
+        if params is None:
+            return
+        delay, rate, loss = params
+
+        if not self.adb_helper.current_device_id:
+            self.log("未选择设备，无法开启限速代理", "ERROR")
+            messagebox.showwarning("无设备", "请先连接并选择设备")
+            return
+
+        def _thread():
+            try:
+                self.shaper.update(delay_ms=delay, rate_kbytes=rate, loss_pct=loss)
+                host, port = self.shaper.start()  # 幂等：已运行则只更新参数
+                self.log(f"限速代理监听 {host}:{port}", "INFO")
+
+                ok, _ = self._run_adb_settings_cmd(
+                    ["put", "global", "http_proxy", f"{host}:{port}"],
+                    "开启限速代理",
+                )
+                if ok:
+                    self.log(f"弱网参数: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
+                    self.after(0, lambda: self.lbl_shaper_status.configure(
+                        text="生效中", text_color="#2e7d32"))
+                    self.after(0, self._start_speed_monitor)
+                self.refresh_proxy_status()
+            except Exception as e:
+                self.log(f"开启限速代理失败: {e}", "ERROR")
+                self.after(0, lambda: self.lbl_shaper_status.configure(text="启动失败", text_color="#c42b1c"))
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def action_stop_shaper(self):
+        self._stop_speed_monitor()
+
+        def _thread():
+            # 先清设备代理，再关本机服务，避免设备短暂指向已关闭端口
+            self._run_adb_settings_cmd(["put", "global", "http_proxy", ":0"], "关闭限速代理")
+            try:
+                self.shaper.stop()
+            except Exception as e:
+                self.log(f"停止限速代理异常: {e}", "WARNING")
+            self.after(0, lambda: self.lbl_shaper_status.configure(text="未开启", text_color="gray"))
+            self.refresh_proxy_status()
+        threading.Thread(target=_thread, daemon=True).start()
+
+    # ---------- 实时速率显示 ----------
+
+    @staticmethod
+    def _fmt_speed(bytes_per_sec):
+        if bytes_per_sec < 1024:
+            return f"{bytes_per_sec:.0f} B/s"
+        if bytes_per_sec < 1024 * 1024:
+            return f"{bytes_per_sec / 1024:.1f} KB/s"
+        return f"{bytes_per_sec / (1024 * 1024):.2f} MB/s"
+
+    def _start_speed_monitor(self):
+        # 先清掉基线，避免第一格把开启前的累计一次性冲进来
+        self.shaper.sample()
+        self._shaper_last_ts = time.monotonic()
+        self._tick_speed()
+
+    def _tick_speed(self):
+        if not self.shaper.is_running():
+            self.lbl_shaper_speed.configure(text="")
+            self._shaper_speed_job = None
+            return
+        now = time.monotonic()
+        dt = max(1e-3, now - (self._shaper_last_ts or now))
+        self._shaper_last_ts = now
+        up, down = self.shaper.sample()
+        self.lbl_shaper_speed.configure(
+            text=f"↑{self._fmt_speed(up / dt)}  ↓{self._fmt_speed(down / dt)}"
+        )
+        self._shaper_speed_job = self.after(1000, self._tick_speed)
+
+    def _stop_speed_monitor(self):
+        if self._shaper_speed_job is not None:
+            try:
+                self.after_cancel(self._shaper_speed_job)
+            except Exception:
+                pass
+            self._shaper_speed_job = None
+        self.lbl_shaper_speed.configure(text="")
+
+    def cleanup_shaper(self):
+        """主窗口关闭时调用：若代理在跑，清掉设备 http_proxy 并停服务。"""
+        if not self.shaper.is_running():
+            return
+        try:
+            device_id = self.adb_helper.current_device_id
+            if device_id:
+                subprocess.run(
+                    [self.adb_helper.adb_cmd, "-s", device_id, "shell", "settings",
+                     "put", "global", "http_proxy", ":0"],
+                    **self.adb_helper._get_subprocess_kwargs(),
+                )
+        except Exception:
+            pass
+        try:
+            self.shaper.stop()
+        except Exception:
+            pass
 
     def action_open_date_settings(self):
         def _thread():
