@@ -11,12 +11,15 @@ class SettingsTab(ctk.CTkFrame):
     def __init__(self, parent, adb_helper, config_manager, log_func,
                  on_config_changed=None, on_device_aliases_changed=None):
         super().__init__(parent, corner_radius=10)
+        self.main_window = parent
         self.adb_helper = adb_helper
         self.config_manager = config_manager
         self.log = log_func
         self.on_config_changed = on_config_changed
         self.on_device_aliases_changed = on_device_aliases_changed
         self.file_helper = FileHelper(config_manager)
+        # device_id -> ro.serialno，由主窗口刷新设备列表时推过来（见 refresh_device_alias_tree）
+        self._serial_map = {}
 
         self.setup_ui()
 
@@ -379,24 +382,55 @@ class SettingsTab(ctk.CTkFrame):
         )
         self.alias_list_frame.pack(padx=10, pady=(0, 8), fill="both", expand=True)
 
-        self.refresh_device_alias_tree()
+        # 构造期先只按已存别名渲染（devices=[] → 全部显示离线），不在这里同步跑
+        # adb devices + getprop 拖慢窗口首屏：启动时主窗口的 refresh_device_list
+        # 完成后会立刻把真实设备列表推过来覆盖。手动点"刷新"仍会自取。
+        self.refresh_device_alias_tree(devices=[], serial_map={})
 
-    def refresh_device_alias_tree(self):
-        """重建卡片列表。"""
+    def _canonical_device_id(self, device_id):
+        """把无线条目（ip:port）归并到它的 USB 序列号。
+
+        别名只应存在序列号上：ip:port 会随 DHCP 变，存在它上面的别名迟早失效。
+        拿不到 serialno（设备离线/未授权）就退回原 id，至少不比归并前差。
+        """
+        if not self.adb_helper.is_wireless_device_id(device_id):
+            return device_id
+        return self._serial_map.get(device_id) or device_id
+
+    def refresh_device_alias_tree(self, devices=None, serial_map=None):
+        """重建卡片列表。
+
+        devices / serial_map 由主窗口刷新设备列表后推过来，避免这里重复跑
+        adb devices + getprop；为 None 时（"刷新"按钮、增删别名后）自己取。
+        同一台物理设备的 USB 与 WiFi 两条 entry 会按 ro.serialno 归并成一行。
+        """
         if not hasattr(self, "alias_list_frame"):
             return
+
+        if serial_map is not None:
+            self._serial_map = serial_map
+        if devices is None:
+            detailed = self.adb_helper.get_devices_detailed(with_serialno=True)
+            self._serial_map = {d["id"]: d["serialno"] for d in detailed if d.get("serialno")}
+            devices = [d["id"] for d in detailed if d["state"] == "device"]
 
         # 清空旧卡片
         for child in self.alias_list_frame.winfo_children():
             child.destroy()
 
         aliases = self.config_manager.get_device_aliases()
-        connected = set(self.adb_helper.get_connected_devices())
+
+        # 归并：canonical id -> 该设备当前占用的传输方式集合
+        online = {}
+        for dev in devices:
+            canonical = self._canonical_device_id(dev)
+            transport = "WiFi" if self.adb_helper.is_wireless_device_id(dev) else "USB"
+            online.setdefault(canonical, set()).add(transport)
 
         # 排序：在线 + 已命名优先，其次离线已命名，最后在线未命名
-        listed_ids = set(aliases.keys()) | connected
+        listed_ids = set(aliases.keys()) | set(online.keys())
         def sort_key(did):
-            is_connected = did in connected
+            is_connected = did in online
             has_alias = did in aliases
             # (优先组, 名称)
             group = 0 if (is_connected and has_alias) else (1 if has_alias else 2)
@@ -418,11 +452,17 @@ class SettingsTab(ctk.CTkFrame):
 
         for device_id in sorted_ids:
             alias = aliases.get(device_id, "")
-            is_connected = device_id in connected
-            self._build_alias_card(self.alias_list_frame, device_id, alias, is_connected)
+            # key 本身是 ip:port 的别名记录属于历史遗留（或手工误设），
+            # 单独标出来让用户能认出并清掉——它随 DHCP 换 IP 就会失效
+            is_legacy = self.adb_helper.is_wireless_device_id(device_id)
+            self._build_alias_card(
+                self.alias_list_frame, device_id, alias,
+                online.get(device_id, set()), is_legacy,
+            )
 
-    def _build_alias_card(self, parent, device_id, alias, is_connected):
-        """单个设备卡片。"""
+    def _build_alias_card(self, parent, device_id, alias, transports=(), is_legacy=False):
+        """单个设备卡片。transports 是该设备当前占用的传输方式集合（USB / WiFi）。"""
+        is_connected = bool(transports)
         card = ctk.CTkFrame(parent, fg_color=("white", "gray22"), corner_radius=6)
         card.pack(fill="x", padx=4, pady=3)
 
@@ -448,21 +488,24 @@ class SettingsTab(ctk.CTkFrame):
         )
         lbl_alias.grid(row=0, column=1, sticky="ew")
 
-        # 设备号（小字、灰色、等宽）
+        # 设备号（小字、灰色、等宽）；遗留的 ip:port 别名 key 额外标注
+        id_text = device_id
+        if is_legacy:
+            id_text += "  ← 旧无线地址，换 IP 后会失效，建议删除"
         lbl_id = ctk.CTkLabel(
-            row, text=device_id,
+            row, text=id_text,
             font=ctk.CTkFont(size=11, family="Consolas"),
-            text_color="gray", anchor="w",
+            text_color="#d68910" if is_legacy else "gray", anchor="w",
         )
         lbl_id.grid(row=1, column=1, sticky="ew", pady=(1, 0))
 
-        # 状态文字（小字）
-        status_text = "已连接" if is_connected else "离线"
+        # 状态文字（小字）：显示当前占用的传输方式，同一台机器 USB+WiFi 都连着时都列出
+        status_text = "+".join(sorted(transports)) if is_connected else "离线"
         status_color = "#2cc985" if is_connected else "#888888"
         lbl_status = ctk.CTkLabel(
             row, text=status_text,
             font=ctk.CTkFont(size=11),
-            text_color=status_color, anchor="e", width=50,
+            text_color=status_color, anchor="e", width=70,
         )
         lbl_status.grid(row=0, column=2, padx=(8, 8), sticky="e")
 
@@ -532,8 +575,14 @@ class SettingsTab(ctk.CTkFrame):
         return result["value"]
 
     def action_add_device_alias(self):
-        """新增：从空白开始（如果有当前设备号则预填）。"""
+        """新增：从空白开始（如果有当前设备号则预填）。
+
+        当前设备是无线连接时预填它的 USB 序列号而不是 ip:port —— 否则用户一路
+        确定下来，别名就存到了会随 DHCP 失效的 key 上。
+        """
         device_id_default = self.adb_helper.current_device_id or ""
+        if device_id_default:
+            device_id_default = self._canonical_device_id(device_id_default)
         alias_default = self.config_manager.get_device_alias(device_id_default) if device_id_default else ""
 
         result = self._prompt_alias_dialog(device_id_default, alias_default, lock_device_id=False)

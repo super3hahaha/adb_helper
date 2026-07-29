@@ -327,6 +327,48 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 - 重截不让子进程碰 adb，走 IPC 回主进程调 `adb_helper.take_screenshot`（serial/别名/尺寸后缀天然正确）；`on_complete` 在 adb 工作线程触发，launcher 里只做带锁的 stdin 写，不碰 Tk
 - **QGraphicsView 平移受滚动范围钳制**：sceneRect=图像时，图像整幅可见（初始 fit 缩放）滚动范围为 0，✋/空格平移完全拖不动。解法是 `update_scene_margins()` 给场景四周扩一圈视口大小的余量（缩放/视口 resize 时都要更新），恢复 Tk 版自由平移。扩余量后滚动条必须 `ScrollBarAlwaysOn`：按需显示的话，初始 fit 按"无滚动条视口"计算 → 滚动条随后出现挤掉一条边 → 图像底部被遮一截。另：所有按钮/滑块要 `setFocusPolicy(NoFocus)`，否则空格会触发聚焦按钮而不是临时平移
 
+## 无线调试（多设备）
+
+### 无线调试的多设备约束：一台机器两条 entry，且 device_id 会变
+
+2026-07-29 把无线调试从"只支持一台"改成多设备并存，踩到/规避的点：
+
+- **多台无线设备可以共用 5555 端口**，adb 用 `ip:port` 整体做 device_id，IP 不同就不冲突。所以**不要**为了连新设备去断开已有无线设备（老版本 `action_start_wireless_debug` 开头就弹窗劝退，已删）。
+- **同一台物理设备开了无线后，`adb devices` 里会同时有 USB 序列号和 `ip:port` 两条**，两条都是 `device` 状态、都能独立下命令。区分靠 `ADBHelper.is_wireless_device_id()`（`ip:port` 正则）；判定"两条是同一台机器"只能靠 `getprop ro.serialno`（`get_devices_detailed(with_serialno=True)`，每台多一次 adb 调用，别在刷新下拉框的热路径上开）。下拉框必须标 `[USB]`/`[WiFi]` 前缀，否则多设备下人眼分不清。
+- **拔线后 device_id 从序列号变成 `ip:port`**，`_apply_device_list` 里"当前设备不在了 → fallback devices[0]"在多设备下会**静默切到别人的机器**，后续安装/清数据打错设备。用 `adb_helper.wireless_addr_by_serial`（开无线时写入的 `serial -> ip:port`）先尝试跟随到同一台的无线条目。
+- **`adb tcpip <port>` 必须显式 `-s <device_id>`**，不能靠 `execute_adb_command` 注入 `current_device_id`：整个流程横跨数秒（取 IP → tcpip → sleep 2s → connect），期间用户可能切下拉框，注入的就是切换后的设备，端口开到错误机器上。同理 IP 探测策略表只存 shell 侧参数，执行时才拼 `[adb, -s, id]`——老代码是就地 `insert` 把 `-s` 塞进策略表元素，既污染列表又只能打到当前设备。
+- **`adb connect` 失败也常返回 exit 0**（输出 `failed to connect to ...`），必须回查 `adb devices` 里该地址是否 `device` 状态才算成功。已连接的地址重复 connect 是幂等的，返回 `already connected to ...`。
+- **不要求先拔 USB**。USB 和 WiFi 并存是合法状态，老版本"请拔掉 USB 数据线"的阻塞弹窗在多设备下纯属打断；改成连上之后再提示"可以拔线了"。
+- 批量连接**串行执行**（`connect_wireless_devices` 里 `async_run=False` 逐台跑），并发 connect 会抢 adb server 的锁。
+- 无线地址记在 `config.json` 的 `wireless_devices`（addr/alias/last_seen），供"重连已保存设备"免插线恢复。**DHCP 换 IP 后旧记录必然失效**，重连失败是正常情况，不自动清理，由用户在管理窗口手动删。
+- **管理窗口刻意不提供"手动输 IP 连接"**（2026-07-29 按需求移除）。连接只有两条自动路径：插 USB 点「开启无线调试」（自动探 IP），或从"已保存设备"重连。`_ask_manual_ip` 保留但只是**自动探 IP 失败时的兜底**，不是常规入口——五种探测策略全失败时不给输入框就彻底没救了。
+
+### 设备别名按 device_id 存，无线条目必须靠 ro.serialno 回落才能显示别名
+
+`device_aliases` 的 key 是 device_id，而无线连接的 device_id 是 `ip:port`，跟 USB 序列号是**两个不同的 key**。不处理的话，设过别名的设备一旦切到 WiFi，下拉框就只剩一串 IP，多设备下完全没法认。
+
+**不要给 `ip:port` 单独设别名**——DHCP 换个 IP 就变成垃圾记录。正解是 `MainWindow.resolve_device_alias()`：先按 device_id 直查，查不到就用 `_device_serial_map`（刷新设备列表时由 `get_devices_detailed(with_serialno=True)` 填充）把无线条目认回 USB 序列号，再查那个序列号的别名。
+
+- `adb_helper.device_label_resolver` 也指向 `resolve_device_alias`（不是裸的 `config_manager.get_device_alias`），这样无线连接下截图/录屏的**文件名**同样带别名，不会退化成 `192_168_212_10_5555`。
+- `_apply_device_list` 里 **`_device_serial_map` 必须在任何 `_format_device_display` 之前更新**，否则这一轮的无线条目会拿上一轮的映射查别名。
+- `getprop ro.serialno` 只对无线条目跑（USB 条目的 device_id 本身就是序列号），额外 adb 调用数 = 无线设备台数。超时用独立的 `SERIALNO_TIMEOUT=5`，别用 `DEVICES_TIMEOUT`：这只是取别名的辅助信息，拿不到就退化显示 `ip:port`，不值得让整个设备列表刷新卡 10 秒。
+- **这批 getprop 必须并发**：无线设备每台约 0.3s（网络往返），实测 4 台**串行 1.26s vs 并发 0.25s**（中位数，5 次采样），设备越多差距越大。别被 `get_devices_detailed` 整体耗时的对比骗了——`adb devices` + `_ensure_adb_server` 的固定开销会把串并行差异掩盖掉，要单独掐 getprop 那段才测得出来。
+- **不要缓存 `ip:port -> serialno`**。看着很诱人（缓存后刷新零成本），但 DHCP 把同一个 IP 分给另一台设备时，缓存会让 UI 显示错误的别名——后果是用户对着 A 的名字操作 B，比慢 0.25s 严重得多。
+
+### 设置页别名表格按 serialno 归并（别让一台设备占两行）
+
+`refresh_device_alias_tree(devices=None, serial_map=None)`：
+
+- 同一台机器的 USB 与 WiFi 两条 entry 经 `_canonical_device_id()` 合成一行，行的 key 是**序列号**；状态列显示实际占用的传输方式（`USB` / `WiFi` / `USB+WiFi` / `离线`）。
+- 参数不传时自己跑 `get_devices_detailed(with_serialno=True)`（"刷新"按钮、增删别名后走这条）；主窗口 `_apply_device_list` 会把**已经算好的** devices + serial_map 推过来，避免同一次刷新里重复跑 adb。推送放在 `if not devices` 早退**之前**，否则设备全掉线时别名表不会更新。
+- 构造期那次刻意传 `devices=[]`：否则窗口首屏要同步等 `adb devices` + N 次 getprop。启动后主窗口的刷新会立刻推真实数据覆盖。
+- `action_add_device_alias` 预填当前设备时会先 `_canonical_device_id()`，否则用户在无线连接下一路确定，别名就存到了随 DHCP 失效的 `ip:port` key 上。
+- key 本身是 `ip:port` 的别名记录（历史遗留或手工误设）单独橙色标注"旧无线地址，换 IP 后会失效"——直查优先意味着它**确实会生效**，不标出来用户不知道该清掉它。
+
+### 无线设备管理窗口用 ctk 而非 PySide6
+
+不是偷懒：**Tk 与 Qt 的 event loop 不能同进程共存**（见上面 Retina 那条），主窗口是 `ctk.CTk` 的 mainloop，任何同进程的 Qt 窗口都得像 `qt_preview/` 那样拆成独立子进程 + stdin/stdout IPC。而这个窗口要频繁双向交互（勾选 → 调 adb → 刷新列表 → 回调主窗口刷新设备下拉框），跨进程 IPC 的成本远高于收益。截图标注窗值得付这个代价是因为 Retina 高清是 Tk 的硬缺陷，设备列表面板没有这种刚需。
+
 ## 弱网模拟
 
 ### 「精确弱网」限速代理是应用层近似，不是内核级 tc/netem

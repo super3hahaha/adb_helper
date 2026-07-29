@@ -16,6 +16,9 @@ class ConfigManager:
         "hidden_apks": [],  # 隐藏的 APK 相对路径列表
         "filter_words": [],  # Logcat 自定义过滤词（快捷标签），格式: ["com.pkg.a", "Error", ...]
         "device_aliases": {},  # 设备序列号 -> 别名，格式: {"0715f7bd99dd1b3a": "测试机 A"}
+        # 曾经无线连接成功过的设备，供"重连已保存设备"一键恢复多台无线设备
+        # 格式: [{"addr": "192.168.1.5:5555", "alias": "测试机 A", "last_seen": "2026-07-29 10:30"}]
+        "wireless_devices": [],
         "skipped_update_version": ""  # 用户"暂不更新"跳过的版本号，出现更新的版本时会重新提示
     }
 
@@ -248,6 +251,55 @@ class ConfigManager:
             self.data["device_aliases"] = aliases
             self.save_config()
         return changed
+
+    # ========== 无线设备记录 ==========
+    # 无线设备的 device_id 就是 "ip:port"，DHCP 换 IP 后旧记录会失效，
+    # 所以这里只当"最近用过的地址"缓存看待，重连失败属正常情况，不清理由用户决定。
+    def get_wireless_devices(self):
+        """返回 [{"addr","alias","last_seen"}] 列表副本，按 last_seen 倒序（最近用过的在前）。"""
+        items = self.data.get("wireless_devices", [])
+        if not isinstance(items, list):
+            return []
+        cleaned = []
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("addr"), str) and it["addr"].strip():
+                cleaned.append({
+                    "addr": it["addr"].strip(),
+                    "alias": (it.get("alias") or "").strip(),
+                    "last_seen": (it.get("last_seen") or "").strip(),
+                })
+        cleaned.sort(key=lambda x: x["last_seen"], reverse=True)
+        return cleaned
+
+    def add_wireless_device(self, addr, alias=""):
+        """记录/更新一台无线设备。同 addr 视为同一条，只刷新 last_seen 与非空别名。"""
+        addr = (addr or "").strip()
+        if not addr:
+            return False
+        import time as _time
+        now = _time.strftime("%Y-%m-%d %H:%M")
+        existing = self.get_wireless_devices()
+        old = next((it for it in existing if it["addr"] == addr), None)
+        items = [it for it in existing if it["addr"] != addr]
+        items.append({
+            "addr": addr,
+            "alias": (alias or "").strip() or (old["alias"] if old else ""),
+            "last_seen": now,
+        })
+        self.data["wireless_devices"] = items
+        self.save_config()
+        return True
+
+    def remove_wireless_device(self, addr):
+        """删除一条无线设备记录。返回 True 表示确实删掉了。"""
+        addr = (addr or "").strip()
+        items = self.get_wireless_devices()
+        kept = [it for it in items if it["addr"] != addr]
+        if len(kept) == len(items):
+            return False
+        self.data["wireless_devices"] = kept
+        self.save_config()
+        return True
 
     # ========== 自动更新：已跳过的版本 ==========
     def get_skipped_update_version(self):

@@ -154,7 +154,7 @@ class ToolsTab(ctk.CTkFrame):
         frame_wireless_btns.grid_columnconfigure(1, weight=1, uniform="wb")
 
         ctk.CTkButton(frame_wireless_btns, text="开启无线调试", height=sys_btn_h, command=self.action_start_wireless_debug).grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        ctk.CTkButton(frame_wireless_btns, text="关闭无线调试", height=sys_btn_h, command=self.action_stop_wireless_debug, fg_color="#c42b1c", hover_color="#8a1f15").grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        ctk.CTkButton(frame_wireless_btns, text="无线设备管理", height=sys_btn_h, command=self.action_manage_wireless).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         # 5. 系统工具
         frame_sys = ctk.CTkFrame(self.container_system)
@@ -461,75 +461,106 @@ class ToolsTab(ctk.CTkFrame):
         threading.Thread(target=_thread, daemon=True).start()
 
     def action_start_wireless_debug(self):
-        # 检查是否已有无线连接的设备
-        try:
-            devices = self.adb_helper.get_connected_devices()
-            wireless_devices = [d for d in devices if ":" in d]
-            if wireless_devices:
-                answer = messagebox.askyesnocancel(
-                    "检测到无线设备",
-                    f"当前已有无线连接的设备：\n{', '.join(wireless_devices)}\n\n是否断开现有无线连接后继续？\n\n是 → 断开并继续\n否 → 不断开，直接继续\n取消 → 取消操作",
-                    parent=self
-                )
-                if answer is None:  # 取消
-                    return
-                if answer:  # 是，先断开
-                    self.adb_helper.stop_wireless_debug()
-                    self.main_window.refresh_device_list()
-        except Exception:
-            pass
+        """为当前选中的设备开启无线调试。
 
-        def on_ip_found(ip):
-            # Show dialog in main thread
-            self.after(0, lambda: self._prompt_unplug(ip))
+        不再检查/劝退"已有其它无线设备"——多台设备各自 IP 共用 5555 端口互不冲突，
+        并存是正常状态。要断开某几台请用「无线设备管理」。
+        """
+        device_id = self.adb_helper.current_device_id
+        if not device_id:
+            messagebox.showerror("错误", "请先在顶部选择要开启无线调试的设备", parent=self)
+            return
+
+        if self.adb_helper.is_wireless_device_id(device_id):
+            messagebox.showinfo(
+                "提示",
+                f"当前选中的 {device_id} 本身就是无线连接。\n"
+                "请先在顶部切换到该设备的 USB 条目，或用「无线设备管理」手动连接。",
+                parent=self,
+            )
+            return
+
+        def on_ip_found(addr, dev):
+            self.after(0, lambda: self._connect_wireless(addr, dev))
 
         def on_failure(reason):
             if reason == "IP_NOT_FOUND":
-                self.after(0, self._ask_manual_ip)
+                self.after(0, lambda: self._ask_manual_ip(device_id))
             else:
                 self.after(0, lambda: messagebox.showerror("错误", f"无线调试启动失败: {reason}", parent=self))
 
         try:
-            self.adb_helper.start_wireless_debug_flow(on_ip_found, on_failure, None)
+            self.adb_helper.start_wireless_debug_flow(on_ip_found, on_failure, device_id=device_id)
         except Exception as e:
             self.log(f"开启无线调试异常: {e}", "ERROR")
 
-    def _ask_manual_ip(self):
-        dialog = ctk.CTkInputDialog(text="无法自动获取 IP 地址。\n请手动输入设备 IP (例如 192.168.x.x):", title="手动输入 IP")
+    def _ask_manual_ip(self, device_id=None):
+        dialog = ctk.CTkInputDialog(
+            text="无法自动获取 IP 地址。\n请手动输入设备 IP (例如 192.168.x.x):",
+            title="手动输入 IP",
+        )
         ip = dialog.get_input()
-        if ip:
-            self._prompt_unplug(ip)
-        else:
+        if not ip:
             self.log("用户取消了手动 IP 输入", "WARNING")
+            return
+        addr = self.adb_helper.normalize_wireless_addr(ip)
+        if not addr:
+            messagebox.showerror("错误", "IP 格式非法，应形如 192.168.1.5 或 192.168.1.5:5555", parent=self)
+            return
+        self._connect_wireless(addr, device_id)
 
-    def _prompt_unplug(self, ip):
-        # Prompt user to unplug USB
-        if messagebox.askokcancel("准备连接", f"已获取设备 IP: {ip}\n\n请现在【拔掉 USB 数据线】，然后点击确定继续。", parent=self):
+    def _connect_wireless(self, addr, device_id=None):
+        """直接连接，不再要求先拔 USB。
+
+        adb 允许同一台机器 USB 与 WiFi 两条 entry 并存，多设备下强制拔线既没必要
+        又会打断流程；连上之后再提示用户"可以拔线了"。
+        """
+        try:
+            self.adb_helper.connect_wireless(
+                addr, lambda ok, a, msg: self._on_connect_result(ok, a, msg, device_id)
+            )
+        except Exception as e:
+            self.log(f"连接无线调试异常: {e}", "ERROR")
+
+    def _on_connect_result(self, success, addr, message="", device_id=None):
+        def _finish():
+            if not success:
+                messagebox.showerror("失败", f"无线调试连接失败：{addr}\n{message}", parent=self)
+                return
+            # 记下地址，之后可在「无线设备管理」里一键重连，不用再插 USB
             try:
-                self.adb_helper.connect_wireless_after_confirm(ip, self._on_connect_result)
-            except Exception as e:
-                self.log(f"连接无线调试异常: {e}", "ERROR")
-        else:
-            self.log("用户取消了无线调试连接", "WARNING")
+                self.config_manager.add_wireless_device(
+                    addr, alias=self.main_window.resolve_device_alias(device_id or "")
+                )
+            except Exception:
+                pass
+            self.main_window.refresh_device_list()
+            messagebox.showinfo(
+                "成功",
+                f"无线调试连接成功！\n地址: {addr}\n\n现在可以拔掉这台设备的 USB 数据线了。",
+                parent=self,
+            )
 
-    def _on_connect_result(self, success, ip):
-        if success:
-            self.after(0, lambda: self.main_window.refresh_device_list())
-            self.after(0, lambda: messagebox.showinfo("成功", f"无线调试连接成功！\nIP: {ip}", parent=self))
-        else:
-            self.after(0, lambda: messagebox.showerror("失败", "无线调试连接失败，请重试。", parent=self))
+        self.after(0, _finish)
 
-    def action_stop_wireless_debug(self):
-        def on_complete(count, error=None):
-            if error:
-                 self.after(0, lambda: messagebox.showerror("错误", f"发生异常: {error}", parent=self))
-            elif count == 0:
-                 self.after(0, lambda: messagebox.showinfo("提示", "当前没有已连接的无线调试设备", parent=self))
-            else:
-                 self.after(0, lambda: self.main_window.refresh_device_list())
-                 self.after(0, lambda: messagebox.showinfo("成功", f"已断开 {count} 个无线设备连接", parent=self))
-        
-        self.adb_helper.stop_wireless_debug(on_complete)
+    def action_manage_wireless(self):
+        from ui.components.wireless_manager_window import WirelessManagerWindow
+
+        win = getattr(self, "wireless_manager_window", None)
+        if win and win.winfo_exists():
+            win.lift()
+            win.focus_force()
+            win.refresh()
+            return
+
+        self.wireless_manager_window = WirelessManagerWindow(
+            self,
+            self.adb_helper,
+            self.config_manager,
+            log_func=self.log,
+            on_changed=self.main_window.refresh_device_list,
+            alias_resolver=self.main_window.resolve_device_alias,
+        )
 
     def action_clear_google_play(self):
         def _thread():

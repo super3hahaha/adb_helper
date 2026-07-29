@@ -30,8 +30,12 @@ class MainWindow(TkinterDnD_CTk):
         self.config_manager = ConfigManager()
         # 初始化 ADB Helper，传入日志回调
         self.adb_helper = ADBHelper(log_callback=self.log_message)
-        # 让 ADB Helper 在文件名拼接时能查到设备别名
-        self.adb_helper.device_label_resolver = self.config_manager.get_device_alias
+        # device_id -> ro.serialno，刷新设备列表时填充。无线条目靠它认回 USB
+        # 序列号，从而共享同一台设备的别名（见 resolve_device_alias）
+        self._device_serial_map = {}
+        # 让 ADB Helper 在文件名拼接时能查到设备别名（走 serialno 兜底，
+        # 这样无线连接下截图/录屏文件名也带别名，不会退化成 ip:port）
+        self.adb_helper.device_label_resolver = self.resolve_device_alias
 
         # 窗口设置
         self.title(APP_NAME)
@@ -180,12 +184,35 @@ class MainWindow(TkinterDnD_CTk):
         except Exception as e:
             self.log_message(f"自动检查更新启动失败: {e}", "WARNING")
 
-    def _format_device_display(self, device_id):
-        """将设备序列号转成下拉框显示文本。"""
+    def resolve_device_alias(self, device_id):
+        """查设备别名，无线条目回落到它的 USB 序列号的别名。
+
+        别名是按 device_id 存的，而无线连接的 device_id 是 "ip:port"，跟 USB
+        序列号是两个 key —— 不做这层回落，设置了别名的设备一旦切到 WiFi 就只剩
+        一串 IP，多设备下完全没法认。给 ip:port 单独设别名不是办法：DHCP 换个
+        IP 就失效了。所以统一用 ro.serialno 把无线条目认回同一台物理设备。
+        """
+        if not device_id:
+            return ""
         alias = self.config_manager.get_device_alias(device_id)
         if alias:
-            return f"{alias} ({device_id})"
-        return device_id
+            return alias
+        serial = self._device_serial_map.get(device_id)
+        if serial and serial != device_id:
+            return self.config_manager.get_device_alias(serial)
+        return ""
+
+    def _format_device_display(self, device_id):
+        """将设备序列号转成下拉框显示文本。
+
+        带 [WiFi]/[USB] 前缀：同一台机器开了无线调试后，USB 序列号和 ip:port
+        会同时出现在列表里，多设备下不标出传输方式根本分不清哪条是哪条。
+        """
+        prefix = "[WiFi] " if self.adb_helper.is_wireless_device_id(device_id) else "[USB] "
+        alias = self.resolve_device_alias(device_id)
+        if alias:
+            return f"{prefix}{alias} ({device_id})"
+        return f"{prefix}{device_id}"
 
     def refresh_device_list(self):
         """刷新设备列表（在子线程执行 adb devices，避免阻塞 UI）。
@@ -213,10 +240,14 @@ class MainWindow(TkinterDnD_CTk):
 
         def _worker():
             try:
-                devices = self.adb_helper.get_connected_devices()
+                # with_serialno=True 只对无线条目多跑一次 getprop，用来让无线设备
+                # 共享 USB 序列号的别名（见 resolve_device_alias）
+                detailed = self.adb_helper.get_devices_detailed(with_serialno=True)
+                serial_map = {d["id"]: d["serialno"] for d in detailed if d.get("serialno")}
+                devices = [d["id"] for d in detailed if d["state"] == "device"]
                 # 切回主线程更新 UI。after 必须也在 try 内：主循环未就绪/窗口已关时
                 # 它会抛 RuntimeError，若不接住，线程死掉后 _refreshing_devices 无人复位
-                self.after(0, lambda: self._apply_device_list(devices, gen))
+                self.after(0, lambda: self._apply_device_list(devices, gen, serial_map))
             except Exception:
                 # 无法回主线程时至少把并发锁复位，超时兜底会负责恢复按钮状态
                 self._refreshing_devices = False
@@ -240,12 +271,16 @@ class MainWindow(TkinterDnD_CTk):
         except Exception:
             pass
 
-    def _apply_device_list(self, devices, gen=None):
+    def _apply_device_list(self, devices, gen=None, serial_map=None):
         """在主线程根据子线程取回的设备列表更新下拉框等控件。"""
         # 期间又点了一次刷新（gen 变了），这次是过时结果，丢弃，避免覆盖新数据
         if gen is not None and gen != getattr(self, "_device_refresh_gen", None):
             return
         self._refreshing_devices = False
+        # 必须在任何 _format_device_display / resolve_device_alias 之前更新，
+        # 否则这一轮的无线条目还按上一轮的映射查别名
+        if serial_map is not None:
+            self._device_serial_map = serial_map
         # 窗口可能已关闭
         if not self.winfo_exists():
             return
@@ -253,6 +288,16 @@ class MainWindow(TkinterDnD_CTk):
             self.btn_refresh_devices.configure(state="normal")
         except Exception:
             pass
+
+        # 把已算好的设备列表 + serialno 映射推给设置页的别名表格，让它按
+        # serialno 归并同一台设备的 USB/WiFi 两条 entry，且不用自己再跑一遍
+        # adb devices + getprop。放在 devices 为空的早退之前，两条路径都要同步。
+        tab_settings = getattr(self, "tab_settings", None)
+        if tab_settings is not None:
+            try:
+                tab_settings.refresh_device_alias_tree(devices, serial_map or {})
+            except Exception as e:
+                self.log_message(f"同步设备别名列表失败: {e}", "WARNING")
 
         if not devices:
             self._device_display_map = {}
@@ -279,11 +324,20 @@ class MainWindow(TkinterDnD_CTk):
             self.device_var.set(self._format_device_display(current))
             self.log_message(f"刷新设备列表，保持选中: {current}", "INFO")
         else:
-            # 默认选中第一个
-            new_device = devices[0]
+            # 选中的设备不在了。先看它是不是"刚开完无线调试然后被拔线的那台"：
+            # 有 USB 序列号 -> ip:port 的映射且该无线条目在线，就跟到同一台物理设备上。
+            # 多设备下直接 fallback 到 devices[0] 会静默切到另一台机器，
+            # 后续的安装/清数据等操作就打错设备了。
+            followed = self.adb_helper.wireless_addr_by_serial.get(current)
+            if followed and followed in devices:
+                new_device = followed
+                self.log_message(f"设备 {current} 已拔线，自动跟随到它的无线连接: {new_device}", "SUCCESS")
+            else:
+                # 默认选中第一个
+                new_device = devices[0]
+                self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
             self.device_var.set(self._format_device_display(new_device))
             self.adb_helper.current_device_id = new_device
-            self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
 
     def _on_dock_reopen(self, *_):
         """单击 Dock 图标时的回调（macOS Reopen Apple Event），恢复已最小化的主窗口"""

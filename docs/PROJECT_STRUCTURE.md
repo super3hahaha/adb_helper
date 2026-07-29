@@ -29,7 +29,8 @@ adb_helper/
 │   │   ├── file_manager_window.py  # 设备文件管理器
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
 │   │   ├── contact_selector.py  # 联系人选择对话框
-│   │   └── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
+│   │   ├── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
+│   │   └── wireless_manager_window.py # 无线设备管理（多台并存：多选断开 / 重连已保存设备）
 │   └── windows/             # 独立功能窗口
 │       ├── update_window.py        # 检查更新（手动 start / 启动静默 start_silent）/ 下载进度 / 触发自动替换
 │       ├── qt_preview/             # Qt 截图预览标注（独立子进程，Retina 高清；默认入口）

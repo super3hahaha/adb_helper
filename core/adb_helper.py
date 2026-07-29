@@ -28,6 +28,10 @@ class ADBHelper:
         self.current_device_id = None # 当前选中的设备序列号
         # 由外部注入：device_id -> 别名 的解析函数（无则回退到序列号）
         self.device_label_resolver = None
+        # USB 序列号 -> 该设备的无线地址 "ip:port"。开启无线调试时写入，
+        # 用于拔线后把 UI 的选中项跟到同一台设备的无线 entry 上（多设备下
+        # 不能简单 fallback 到列表第一台，否则会静默跳到别人的机器上）
+        self.wireless_addr_by_serial = {}
         # adb server 是否已确认在运行（见 _ensure_adb_server）
         self._adb_server_ready = False
         self._adb_server_lock = threading.Lock()
@@ -1119,17 +1123,123 @@ class ADBHelper:
         return success, msg
 
     # --- Wireless Debugging Logic ---
-    
-    def start_wireless_debug_flow(self, on_ip_found, on_failure, on_success):
+
+    WIRELESS_DEFAULT_PORT = 5555
+
+    @staticmethod
+    def is_wireless_device_id(device_id):
+        """device_id 是否是无线连接（adb 的无线设备 id 就是 "ip:port"）。"""
+        return bool(re.fullmatch(r'\d+\.\d+\.\d+\.\d+:\d+', (device_id or "").strip()))
+
+    @classmethod
+    def normalize_wireless_addr(cls, addr):
+        """把用户输入的 "ip" 或 "ip:port" 规整成 "ip:port"，非法则返回 None。"""
+        addr = (addr or "").strip()
+        m = re.fullmatch(r'(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?', addr)
+        if not m:
+            return None
+        ip, port = m.group(1), m.group(2)
+        if any(int(seg) > 255 for seg in ip.split(".")):
+            return None
+        port = int(port) if port else cls.WIRELESS_DEFAULT_PORT
+        if not (1 <= port <= 65535):
+            return None
+        return f"{ip}:{port}"
+
+    # 取 ro.serialno 只是为了把无线条目认回 USB 序列号（别名/去重），
+    # 拿不到就退化成显示 ip:port，不值得为它卡住整个设备列表刷新
+    SERIALNO_TIMEOUT = 5
+
+    def get_devices_detailed(self, with_serialno=False):
+        """返回 [{"id","transport","state","serialno"}]。
+
+        transport 为 "wifi" / "usb"。with_serialno=True 时给每条 entry 补上
+        ro.serialno —— 同一台机器 USB 与 WiFi 两条 entry 的 serialno 相同，
+        用来把"这台无线设备就是那台 USB 设备"认出来（别名共享、去重都靠它）。
+        只有无线条目需要实际执行 getprop（USB 条目的 device_id 本身就是序列号），
+        所以额外的 adb 调用数 = 无线设备台数，不是总设备数。
         """
-        Starts the wireless debugging flow.
-        1. Enables TCPIP
-        2. Gets IP
-        3. Calls on_ip_found(ip) -> UI should prompt user to unplug
-        4. (UI calls connect_wireless_after_confirm)
+        self._ensure_adb_server(force=True)
+        result = []
+        try:
+            proc = subprocess.run(
+                [self.adb_cmd, "devices"],
+                **self._get_subprocess_kwargs(timeout=self.DEVICES_TIMEOUT)
+            )
+            if proc.returncode != 0:
+                return []
+            for line in proc.stdout.strip().split('\n')[1:]:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                dev_id, state = parts[0], parts[1]
+                result.append({
+                    "id": dev_id,
+                    "state": state,
+                    "transport": "wifi" if self.is_wireless_device_id(dev_id) else "usb",
+                    "serialno": "",
+                })
+        except subprocess.TimeoutExpired:
+            self.log(f"获取设备列表超时 ({self.DEVICES_TIMEOUT}s)，请检查 adb / USB 连接。", "ERROR")
+            return []
+        except Exception as e:
+            self.log(f"获取设备列表失败: {e}", "ERROR")
+            return []
+
+        if with_serialno:
+            pending = []
+            for item in result:
+                if item["transport"] == "usb":
+                    # USB 的 device_id 本身就是序列号，不用问设备
+                    item["serialno"] = item["id"]
+                elif item["state"] == "device":
+                    pending.append(item)
+
+            def _fetch(target):
+                try:
+                    proc = subprocess.run(
+                        [self.adb_cmd, "-s", target["id"], "shell", "getprop", "ro.serialno"],
+                        **self._get_subprocess_kwargs(timeout=self.SERIALNO_TIMEOUT)
+                    )
+                    target["serialno"] = proc.stdout.strip()
+                except Exception:
+                    pass
+
+            # 并发取：无线设备的 getprop 每台约 0.3s（网络往返），实测 4 台串行
+            # 1.26s vs 并发 0.25s（中位数，5 次），设备越多差距越大。
+            # 各线程只写自己那个 dict 的一个键，无竞争。
+            # join 给足超时兜底，单台设备卡住不拖垮整次刷新（subprocess 自身也有 timeout）。
+            if pending:
+                threads = [threading.Thread(target=_fetch, args=(it,), daemon=True)
+                           for it in pending]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=self.SERIALNO_TIMEOUT + 2)
+        return result
+
+    def get_wireless_devices(self):
+        """同步返回当前处于 device 状态的无线设备地址列表 ["ip:port", ...]。"""
+        return [d["id"] for d in self.get_devices_detailed()
+                if d["transport"] == "wifi" and d["state"] == "device"]
+
+    def start_wireless_debug_flow(self, on_ip_found, on_failure, device_id=None,
+                                  port=WIRELESS_DEFAULT_PORT):
+        """对指定设备开启无线调试端口并取回它的 IP。
+
+        1. 取该设备的 wlan0 IP
+        2. adb -s <device_id> tcpip <port>
+        3. 回调 on_ip_found(addr, device_id)，addr 形如 "ip:port"
+        4. (UI 随后调 connect_wireless)
+
+        device_id 为 None 时用当前选中设备。多设备场景下必须显式定向 ——
+        整个流程横跨数秒，期间用户可能切换下拉框，靠 current_device_id
+        隐式注入会把端口开到错误的设备上。
         """
+        device_id = device_id or self.current_device_id
+
         def _thread():
-            self.log("正在启动无线调试流程...", "INFO")
+            self.log(f"正在为设备 {device_id} 启动无线调试流程...", "INFO")
             try:
                 # 1. Open Port
                 # Some devices disconnect when running `adb tcpip 5555` while already connected via tcpip,
@@ -1140,47 +1250,40 @@ class ADBHelper:
                 self.log("正在尝试获取设备 IP...", "INFO")
                 device_ip = None
                 
+                # 只存 shell 侧参数，执行时再前置 [adb, -s, device_id]：
+                # 原来是就地 insert 把 -s 塞进策略表，既污染列表又只能打到 current_device_id
                 ip_strategies = [
-                    (["adb", "shell", "ip", "route"], [
+                    (["shell", "ip", "route"], [
                         r'dev\s+wlan0\s+.*src\s+(\d+\.\d+\.\d+\.\d+)',
                         r'src\s+(\d+\.\d+\.\d+\.\d+).*dev\s+wlan0',
                         r'src\s+(\d+\.\d+\.\d+\.\d+)'
                     ]),
-                    (["adb", "shell", "ip", "addr", "show", "wlan0"], [r'inet\s+(\d+\.\d+\.\d+\.\d+)']),
-                    (["adb", "shell", "ifconfig", "wlan0"], [r'inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)']),
-                    (["adb", "shell", "ip", "-4", "addr"], [
+                    (["shell", "ip", "addr", "show", "wlan0"], [r'inet\s+(\d+\.\d+\.\d+\.\d+)']),
+                    (["shell", "ifconfig", "wlan0"], [r'inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)']),
+                    (["shell", "ip", "-4", "addr"], [
                         r'wlan0.*?inet\s+(\d+\.\d+\.\d+\.\d+)',
                         r'global\s+wlan0\s+.*?inet\s+(\d+\.\d+\.\d+\.\d+)'
                     ]),
-                    (["adb", "shell", "netcfg"], [r'wlan0\s+UP\s+(\d+\.\d+\.\d+\.\d+)'])
+                    (["shell", "netcfg"], [r'wlan0\s+UP\s+(\d+\.\d+\.\d+\.\d+)'])
                 ]
 
-                try:
-                    self.check_device()
-                except NoDeviceConnectedError as e:
-                    self.log(f"操作中止: {e}", "ERROR")
+                if not device_id:
+                    self.log("操作中止: 当前未选择任何设备", "ERROR")
                     if on_failure:
-                        on_failure(f"EXCEPTION: {str(e)}")
+                        on_failure("EXCEPTION: 当前未选择任何设备")
                     return
 
-                for cmd, patterns in ip_strategies:
+                for args, patterns in ip_strategies:
                     if device_ip: break
                     try:
-                        if cmd[0] == "adb" and "-s" not in cmd:
-                            cmd.insert(1, "-s")
-                            cmd.insert(2, self.current_device_id)
-                            
-                        # ADB 路径适配
-                        if cmd[0] == "adb":
-                            cmd[0] = self.adb_cmd
-                            
+                        cmd = [self.adb_cmd, "-s", device_id] + args
                         self.log(f"尝试获取IP指令: {' '.join(cmd)}", "INFO")
                         result = subprocess.run(
                             cmd,
                             **self._get_subprocess_kwargs()
                         )
                         output = result.stdout.strip()
-                        
+
                         for pattern in patterns:
                             match = re.search(pattern, output, re.IGNORECASE | re.DOTALL)
                             if match:
@@ -1189,8 +1292,8 @@ class ADBHelper:
                                     device_ip = ip_candidate
                                     self.log(f"通过策略成功获取 IP: {device_ip}", "SUCCESS")
                                     break
-                        
-                        if not device_ip and "ip" in cmd and "addr" in cmd:
+
+                        if not device_ip and "ip" in args and "addr" in args:
                              all_ips = re.findall(r'inet\s+(\d+\.\d+\.\d+\.\d+)', output)
                              for ip in all_ips:
                                  if not ip.startswith("127."):
@@ -1208,14 +1311,25 @@ class ADBHelper:
                     return
 
                 self.log(f"获取到设备 IP: {device_ip}", "INFO")
-                
+
                 # 3. Open Port (after getting IP to avoid disconnection issues during IP retrieval)
-                self.log("正在开启设备 TCP/IP 端口 5555...", "INFO")
-                self.execute_adb_command(["adb", "tcpip", "5555"])
+                self.log(f"正在开启设备 {device_id} 的 TCP/IP 端口 {port}...", "INFO")
+                ok, msg = self.execute_adb_command(
+                    [self.adb_cmd, "-s", device_id, "tcpip", str(port)], check_dev=False
+                )
+                if not ok:
+                    if on_failure:
+                        on_failure(f"EXCEPTION: 开启 tcpip {port} 失败: {msg}")
+                    return
                 time.sleep(2)
 
+                addr = f"{device_ip}:{port}"
+                # 记下 USB 序列号 -> 无线地址，拔线后 UI 能把选中项跟到同一台设备上
+                if not self.is_wireless_device_id(device_id):
+                    self.wireless_addr_by_serial[device_id] = addr
+
                 if on_ip_found:
-                    on_ip_found(device_ip)
+                    on_ip_found(addr, device_id)
 
             except Exception as e:
                 self.log(f"无线调试流程异常: {str(e)}", "ERROR")
@@ -1224,69 +1338,105 @@ class ADBHelper:
 
         threading.Thread(target=_thread, daemon=True).start()
 
-    def connect_wireless_after_confirm(self, device_ip, on_result):
+    def connect_wireless(self, addr, on_result, async_run=True):
+        """连接一台无线设备。addr 接受 "ip" 或 "ip:port"（缺省端口 5555）。
+
+        回调 on_result(success, addr, message)。多台设备可以各自 IP 共用 5555，
+        彼此不冲突，所以这里不做"是否已有其它无线设备"的检查，也不要求先拔 USB
+        —— adb 允许同一台机器 USB 与 WiFi 两条 entry 并存。
         """
-        Continues the wireless debugging flow after user confirmation.
+        norm = self.normalize_wireless_addr(addr)
+
+        def _work():
+            if not norm:
+                self.log(f"无线地址格式非法: {addr}", "ERROR")
+                if on_result:
+                    on_result(False, addr, "地址格式非法，应形如 192.168.1.5 或 192.168.1.5:5555")
+                return
+
+            self.log(f"正在尝试无线连接 {norm} ...", "INFO")
+            ok, out = self.execute_adb_command(
+                [self.adb_cmd, "connect", norm], check_dev=False
+            )
+            time.sleep(2)
+
+            # 验证：adb connect 即使失败也常返回 0，必须回查 devices 里该地址是否 device 状态
+            connected = norm in self.get_wireless_devices()
+            if connected:
+                self.log(f"无线调试连接成功: {norm}", "SUCCESS")
+                if on_result:
+                    on_result(True, norm, out or "")
+            else:
+                msg = out or "未知错误"
+                self.log(f"无线调试连接失败: {norm} ({msg})", "ERROR")
+                if on_result:
+                    on_result(False, norm, msg)
+
+        if async_run:
+            threading.Thread(target=_work, daemon=True).start()
+        else:
+            _work()
+
+    def connect_wireless_devices(self, addrs, on_complete=None):
+        """批量连接多台无线设备（串行执行，避免 adb server 并发 connect 抢锁）。
+
+        回调 on_complete(results)，results 为 [(addr, success, message), ...]。
         """
         def _thread():
-            self.log("正在尝试无线连接...", "INFO")
-            
-            # Check USB
-            try:
-                check_res = subprocess.run(
-                    [self.adb_cmd, "devices"],
-                    **self._get_subprocess_kwargs()
-                )
-                usb_devices = [line for line in check_res.stdout.splitlines() if "\tdevice" in line and not re.search(r'\d+\.\d+\.\d+\.\d+:\d+', line)]
-                # Warning logic should be handled by UI if needed, or we just proceed
-            except: pass
-            
-            # Connect
-            self.execute_adb_command(["adb", "connect", f"{device_ip}:5555"], check_dev=False)
-            time.sleep(2)
-            
-            # Verify
-            final_res = subprocess.run(
-                [self.adb_cmd, "devices"],
-                **self._get_subprocess_kwargs()
-            )
-            
-            success = f"{device_ip}:5555" in final_res.stdout
-            if success:
-                self.log(f"无线调试连接成功: {device_ip}", "SUCCESS")
-            else:
-                self.log("无线调试连接失败", "ERROR")
-            
-            if on_result:
-                on_result(success, device_ip)
+            results = []
+
+            def _collect(success, addr, message):
+                results.append((addr, success, message))
+
+            for a in addrs:
+                self.connect_wireless(a, _collect, async_run=False)
+            ok_count = sum(1 for r in results if r[1])
+            self.log(f"批量无线连接完成: 成功 {ok_count}/{len(addrs)}", "SUCCESS" if ok_count else "WARNING")
+            if on_complete:
+                on_complete(results)
 
         threading.Thread(target=_thread, daemon=True).start()
 
-    def stop_wireless_debug(self, on_complete=None):
+    def disconnect_wireless(self, targets=None, on_complete=None):
+        """断开无线设备。
+
+        targets 为 None 时断开当前所有无线设备（"全部断开"）；
+        传 ["ip:port", ...] 则只断开指定的那几台，其它无线设备保持连接。
+        回调 on_complete(count, error=None)，count 为实际断开的台数，-1 表示异常。
+        """
         def _thread():
-            self.log("正在检查已连接的无线设备...", "INFO")
             try:
-                result = subprocess.run(
-                    [self.adb_cmd, "devices"],
-                    **self._get_subprocess_kwargs()
-                )
-                output = result.stdout
-                wireless_devices = re.findall(r'(\d+\.\d+\.\d+\.\d+:\d+)\s+device', output)
-                
+                if targets is None:
+                    self.log("正在检查已连接的无线设备...", "INFO")
+                    wireless_devices = self.get_wireless_devices()
+                else:
+                    wireless_devices = [a for a in (self.normalize_wireless_addr(t) for t in targets) if a]
+
                 if not wireless_devices:
-                    self.log("未发现已连接的无线调试设备", "WARNING")
+                    self.log("未发现要断开的无线调试设备", "WARNING")
                     if on_complete: on_complete(0)
                     return
 
                 count = 0
                 for device in wireless_devices:
-                    self.execute_adb_command(["adb", "disconnect", device], check_dev=False)
-                    count += 1
-                
+                    ok, _ = self.execute_adb_command(
+                        [self.adb_cmd, "disconnect", device], check_dev=False
+                    )
+                    if ok:
+                        count += 1
+                    # 断开后清掉 serial -> addr 映射，避免刷新时把选中项跟到已断开的地址
+                    for serial, mapped in list(self.wireless_addr_by_serial.items()):
+                        if mapped == device:
+                            del self.wireless_addr_by_serial[serial]
+                    # 当前操作设备正是被断开的这台，清空选中，避免后续命令打到死地址
+                    if self.current_device_id == device:
+                        self.current_device_id = None
+
+                self.log(f"已断开 {count} 台无线设备", "SUCCESS")
                 if on_complete: on_complete(count)
-                
+
             except Exception as e:
-                self.log(f"关闭无线调试异常: {str(e)}", "ERROR")
+                self.log(f"断开无线设备异常: {str(e)}", "ERROR")
                 if on_complete: on_complete(-1, str(e)) # -1 indicates error
 
         threading.Thread(target=_thread, daemon=True).start()
