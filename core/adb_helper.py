@@ -5,6 +5,7 @@ import re
 import time
 import os
 import queue
+import socket
 import xml.etree.ElementTree as ET
 from core.platform_utils import PlatformUtils
 
@@ -35,6 +36,10 @@ class ADBHelper:
         # adb server 是否已确认在运行（见 _ensure_adb_server）
         self._adb_server_ready = False
         self._adb_server_lock = threading.Lock()
+        # 设备插拔监听（见 start_device_watch）
+        self._watch_thread = None
+        self._watch_stop_event = threading.Event()
+        self._watch_sock = None
         # ADB 路径适配
         self.adb_cmd = PlatformUtils.get_adb_executable()
 
@@ -155,6 +160,179 @@ class ADBHelper:
                 self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
             except Exception as e:
                 self.log(f"启动 adb server 失败: {e}", "WARNING")
+
+    # ---------------- 设备插拔监听（adb host:track-devices 长连接） ----------------
+    #
+    # 为什么不定时轮询 adb devices：插拔一天也就几次，轮询要为此全天不停起进程。
+    # 为什么不用 `adb track-devices` 子命令：那只是 CLI 层封装，部分 platform-tools
+    #   版本里没有；更要紧的是它意味着一个**长驻的、带 stdout 管道的 adb 子进程**，
+    #   正好是 _ensure_adb_server 里描述的那个 Windows 管道死锁的形态。
+    # 直接连 adb server 的 socket 反而最干净：没有子进程、没有管道，停止时
+    #   shutdown 就能立刻打断阻塞的 recv。host:track-devices 是 adb 的远古 host
+    #   服务，协议（4 位 hex 长度前缀 + payload）多年没变过。
+    #
+    # 协议：连上后发 "host:track-devices" → 读 "OKAY" → 之后每次设备状态变化，
+    # server 主动推一帧「当前完整设备列表」快照（可能是空帧，表示当前没有设备）。
+    WATCH_SOCK_TIMEOUT = 5    # 等待下一帧的 recv 超时，仅用于周期性醒来看停止标志
+    WATCH_FRAME_TIMEOUT = 30  # 长度头已读到后，读 payload 的超时（见 _read_track_frame）
+    WATCH_RETRY_MAX = 30      # 断线重连退避上限（秒）
+
+    @staticmethod
+    def _adb_server_addr():
+        """adb server 的监听地址，尊重 adb 自己那两个环境变量。"""
+        host = os.environ.get("ANDROID_ADB_SERVER_ADDRESS") or "127.0.0.1"
+        try:
+            port = int(os.environ.get("ANDROID_ADB_SERVER_PORT") or 5037)
+        except ValueError:
+            port = 5037
+        return host, port
+
+    @staticmethod
+    def _recv_exact(sock, n):
+        """阻塞读满 n 字节。对端关闭时抛 ConnectionError。"""
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("adb server 关闭了连接")
+            buf += chunk
+        return buf
+
+    @staticmethod
+    def _send_adb_request(sock, service):
+        """按 adb 协议发一个 host 服务请求，并校验返回的 OKAY。"""
+        payload = service.encode("utf-8")
+        sock.sendall(b"%04x" % len(payload) + payload)
+        status = ADBHelper._recv_exact(sock, 4)
+        if status != b"OKAY":
+            reason = ""
+            try:  # FAIL 后面还跟一帧「长度 + 原因」
+                n = int(ADBHelper._recv_exact(sock, 4), 16)
+                reason = ADBHelper._recv_exact(sock, n).decode("utf-8", "replace")
+            except Exception:
+                pass
+            raise ConnectionError(f"adb server 拒绝了 {service}: {status!r} {reason}")
+
+    def _read_track_frame(self, sock):
+        """读一帧设备列表文本。返回 None 表示只是 recv 超时（这段时间没有插拔）。"""
+        try:
+            head = self._recv_exact(sock, 4)
+        except socket.timeout:
+            return None
+        n = int(head, 16)
+        if n == 0:
+            return ""  # 合法：当前一台设备都没有
+        # 长度头已经拿到手，payload 必须完整读完。这里绝不能沿用"超时就继续外层
+        # 循环"那套：读一半就跳走会让后续的长度头错位，协议流永久乱掉。宁可判定
+        # 连接坏掉走重连（重连会重建干净的流），也不能错位。
+        sock.settimeout(self.WATCH_FRAME_TIMEOUT)
+        try:
+            return self._recv_exact(sock, n).decode("utf-8", "replace")
+        finally:
+            sock.settimeout(self.WATCH_SOCK_TIMEOUT)
+
+    @staticmethod
+    def _parse_track_payload(text):
+        """把一帧解析成 {device_id: state}。帧里只有 id 和 state，没有 serialno。"""
+        snapshot = {}
+        for line in text.splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) >= 2 and parts[0].strip():
+                snapshot[parts[0].strip()] = parts[1].strip()
+        return snapshot
+
+    def start_device_watch(self, on_change):
+        """开始监听设备插拔，列表有变化时在**工作线程**里回调 on_change()。
+
+        on_change 只是「设备列表变了」的通知，不带数据 —— track-devices 的帧里
+        只有 id + state，没有 ro.serialno，调用方仍要自己跑一次完整刷新。
+        回调在工作线程里执行，里面碰 UI 必须自己 after(0) 切回主线程。
+
+        这是纯增量功能：监听失败、adb server 没起来、连接断开，都只会退化成
+        「跟以前一样需要手动点刷新」，绝不影响手动刷新链路（不碰
+        _refreshing_devices、不碰按钮状态），不引入新的锁死路径。
+        """
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._watch_stop_event.clear()
+        self._watch_thread = threading.Thread(
+            target=self._device_watch_loop, args=(on_change,), daemon=True
+        )
+        self._watch_thread.start()
+
+    def stop_device_watch(self):
+        """停止监听。shutdown 让阻塞在 recv 的线程立刻返回，不必等到 socket 超时。"""
+        self._watch_stop_event.set()
+        sock = self._watch_sock
+        self._watch_sock = None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+
+    def _device_watch_loop(self, on_change):
+        delay = 2
+        last = None            # 跨连接保留的「最后已知快照」
+        got_frame = False      # 是否已经成功收到过任何一帧（决定首帧算基线还是算变化）
+        warned = False         # 连接失败只警告一次，避免 adb 缺失时刷屏
+        while not self._watch_stop_event.is_set():
+            try:
+                # 跟所有 adb 调用一样，先确保 server 在（且是用 DEVNULL 句柄起的）。
+                # 必须 force：不 force 的话 _adb_server_ready 一旦为 True 就直接返回，
+                # server 真的挂掉后我们只会对着 refused 的端口无限重连，永远没人把它
+                # 拉起来。server 已在运行时 start-server <100ms 且幂等，退避下最快也
+                # 才 2s 一次，开销可忽略。
+                self._ensure_adb_server(force=True)
+                if self._watch_stop_event.is_set():
+                    return
+                with socket.create_connection(
+                    self._adb_server_addr(), timeout=self.WATCH_SOCK_TIMEOUT
+                ) as sock:
+                    sock.settimeout(self.WATCH_SOCK_TIMEOUT)
+                    self._watch_sock = sock
+                    self._send_adb_request(sock, "host:track-devices")
+                    delay = 2       # 连上了，重置退避
+                    warned = False  # 也重置告警：下次断线值得再报一次
+                    first_frame = True
+                    while not self._watch_stop_event.is_set():
+                        frame = self._read_track_frame(sock)
+                        if frame is None:
+                            continue  # 只是超时醒来看一眼停止标志
+                        snapshot = self._parse_track_payload(frame)
+                        if first_frame:
+                            # 连上时 server 会立即推一帧当前状态。整个生命周期的
+                            # 第一帧跟启动时的初始刷新重复，只用来建基线；重连后的
+                            # 首帧则要比对，因为断线期间可能真的插拔过。
+                            notify = got_frame and snapshot != last
+                            first_frame = False
+                            got_frame = True
+                        else:
+                            notify = snapshot != last
+                        last = snapshot
+                        if notify:
+                            try:
+                                on_change()
+                            except Exception:
+                                pass  # 回调自己的问题不能连累监听线程
+            except Exception as e:
+                if self._watch_stop_event.is_set():
+                    return
+                # 每轮连接周期只报一次（warned 在连上后重置），否则 adb 缺失/长期
+                # 连不上时会把日志刷爆
+                if not warned:
+                    if got_frame:
+                        # 曾经工作过 → 这是断线（kill-server、休眠唤醒等），会自愈
+                        self.log(f"设备插拔监听连接中断，正在自动重连: {e}", "INFO")
+                    else:
+                        self.log(f"设备插拔监听未能启动，将退化为手动刷新: {e}", "WARNING")
+                    warned = True
+            finally:
+                self._watch_sock = None
+            # 退避重连。用 Event.wait 而非 sleep，stop 时能立刻打断
+            if self._watch_stop_event.wait(timeout=delay):
+                return
+            delay = min(delay * 2, self.WATCH_RETRY_MAX)
 
     def execute_adb_command(self, cmd_list, check_dev=True, timeout=None):
         """执行 ADB 命令并处理输出 (核心函数)"""

@@ -160,12 +160,53 @@ class MainWindow(TkinterDnD_CTk):
         )
         self.btn_check_update.grid(row=0, column=5)
 
-        # 初始刷新。必须推迟到 mainloop 启动后再发起：refresh 的工作线程会调
-        # self.after() 回主线程，若 adb devices 返回得比 mainloop 启动还快
+        # 初始刷新 + 挂上设备插拔监听。必须推迟到 mainloop 启动后再发起：工作线程
+        # 会调 self.after() 回主线程，若 adb devices 返回得比 mainloop 启动还快
         # （server 已在运行时只要几十毫秒），非主线程调 after 会抛
         # "RuntimeError: main thread is not in main loop"，线程当场死亡，
         # _refreshing_devices 永远为 True → 设备列表刷不出来、刷新按钮失效。
-        self.after(0, self.refresh_device_list)
+        self.after(0, self._start_device_tracking)
+
+    def _start_device_tracking(self):
+        """mainloop 就绪后：先刷一次设备列表，再挂上插拔监听。"""
+        self.refresh_device_list()
+        self.adb_helper.start_device_watch(self._on_device_change_event)
+
+    def _on_device_change_event(self):
+        """adb 报告设备列表有变化。**在监听线程里被调用，绝不能碰控件。**"""
+        # after 必须包 try：mainloop 未就绪 / 窗口已关时它会抛 RuntimeError，
+        # 不接住的话监听线程当场死掉（gotchas.md 里 4043eba 那个坑）
+        try:
+            self.after(0, self._schedule_device_autorefresh)
+        except Exception:
+            pass
+
+    def _schedule_device_autorefresh(self):
+        """主线程：把短时间内的多次设备变化合并成一次刷新。
+
+        插一次线 adb 会连推好几帧（offline → unauthorized → device），而且设备刚
+        出现时还没授权完，立刻 getprop 拿不到 ro.serialno（别名就回落不上去）。
+        用一个可取消的延时把这些抖动吃掉，稳定后只刷一次。
+        """
+        if not self.winfo_exists():
+            return
+        pending = getattr(self, "_device_autorefresh_after_id", None)
+        if pending:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+
+        def _fire():
+            self._device_autorefresh_after_id = None
+            if getattr(self, "_refreshing_devices", False):
+                # 已有刷新在跑，而它取到的快照可能早于这次插拔；等它结束后再补一次。
+                # _refreshing_devices 有 15s 兜底会被复位，不会无限推后。
+                self._schedule_device_autorefresh()
+                return
+            self.refresh_device_list(silent=True)
+
+        self._device_autorefresh_after_id = self.after(800, _fire)
 
     def action_check_update(self):
         """检查并更新到最新 Release。"""
@@ -214,11 +255,15 @@ class MainWindow(TkinterDnD_CTk):
             return f"{prefix}{alias} ({device_id})"
         return f"{prefix}{device_id}"
 
-    def refresh_device_list(self):
+    def refresh_device_list(self, silent=False):
         """刷新设备列表（在子线程执行 adb devices，避免阻塞 UI）。
 
         adb devices 可能因冷启动 daemon / 设备异常而耗时数秒，放主线程会冻住窗口。
         这里在子线程取设备列表，再用 after(0) 切回主线程更新控件（Tkinter 只能主线程改 UI）。
+
+        silent=True 用于设备插拔事件触发的自动刷新：不打日志、不置灰按钮，且在
+        设备列表实际没变化时一行 UI 都不碰（见 _apply_device_list），免得用户正
+        展开着下拉框时被无谓重建。
         """
         # 防止连点刷新时多个线程并发
         if getattr(self, "_refreshing_devices", False):
@@ -232,11 +277,12 @@ class MainWindow(TkinterDnD_CTk):
         self._device_refresh_gen = getattr(self, "_device_refresh_gen", 0) + 1
         gen = self._device_refresh_gen
 
-        self.log_message("正在刷新设备列表...", "INFO")
-        try:
-            self.btn_refresh_devices.configure(state="disabled")
-        except Exception:
-            pass
+        if not silent:
+            self.log_message("正在刷新设备列表...", "INFO")
+            try:
+                self.btn_refresh_devices.configure(state="disabled")
+            except Exception:
+                pass
 
         def _worker():
             try:
@@ -247,7 +293,7 @@ class MainWindow(TkinterDnD_CTk):
                 devices = [d["id"] for d in detailed if d["state"] == "device"]
                 # 切回主线程更新 UI。after 必须也在 try 内：主循环未就绪/窗口已关时
                 # 它会抛 RuntimeError，若不接住，线程死掉后 _refreshing_devices 无人复位
-                self.after(0, lambda: self._apply_device_list(devices, gen, serial_map))
+                self.after(0, lambda: self._apply_device_list(devices, gen, serial_map, silent))
             except Exception:
                 # 无法回主线程时至少把并发锁复位，超时兜底会负责恢复按钮状态
                 self._refreshing_devices = False
@@ -271,7 +317,7 @@ class MainWindow(TkinterDnD_CTk):
         except Exception:
             pass
 
-    def _apply_device_list(self, devices, gen=None, serial_map=None):
+    def _apply_device_list(self, devices, gen=None, serial_map=None, silent=False):
         """在主线程根据子线程取回的设备列表更新下拉框等控件。"""
         # 期间又点了一次刷新（gen 变了），这次是过时结果，丢弃，避免覆盖新数据
         if gen is not None and gen != getattr(self, "_device_refresh_gen", None):
@@ -289,6 +335,27 @@ class MainWindow(TkinterDnD_CTk):
         except Exception:
             pass
 
+        # 插拔事件触发的自动刷新：结果跟当前显示完全一致时，一行 UI 都不碰。
+        # track-devices 会为一次插拔推好几帧（offline → unauthorized → device），
+        # 落到 state=="device" 的列表上往往并无变化；不短路的话每帧都要重建下拉框
+        # （用户可能正展开着它选设备）、联动刷一遍设置页的别名表格、再打一行日志。
+        if silent:
+            prev_map = dict(getattr(self, "_device_display_map", {}))
+            prev_display = list(prev_map.keys())
+            if not devices:
+                if not prev_display:
+                    return  # 本来就没设备，这帧还是没有
+            elif [self._format_device_display(d) for d in devices] == prev_display:
+                return
+            # 确实变了。这两条是自动刷新唯一会打的日志，正好告诉用户"插上的设备认到了"
+            prev_ids = set(prev_map.values())
+            for d in devices:
+                if d not in prev_ids:
+                    self.log_message(f"检测到设备接入: {self._format_device_display(d)}", "SUCCESS")
+            for d in prev_ids:
+                if d not in devices:
+                    self.log_message(f"检测到设备断开: {d}", "WARNING")
+
         # 把已算好的设备列表 + serialno 映射推给设置页的别名表格，让它按
         # serialno 归并同一台设备的 USB/WiFi 两条 entry，且不用自己再跑一遍
         # adb devices + getprop。放在 devices 为空的早退之前，两条路径都要同步。
@@ -304,7 +371,8 @@ class MainWindow(TkinterDnD_CTk):
             self.device_selector.configure(values=[])
             self.device_var.set("未选择设备")
             self.adb_helper.current_device_id = None
-            self.log_message("未检测到连接的设备", "WARNING")
+            if not silent:  # silent 路径上面已按"接入/断开"逐台报过了
+                self.log_message("未检测到连接的设备", "WARNING")
             return
 
         # 建立 显示文本 -> 真实序列号 的映射
@@ -320,9 +388,10 @@ class MainWindow(TkinterDnD_CTk):
         # 智能联动逻辑
         current = self.adb_helper.current_device_id
         if current in devices:
-            # 当前设备还在，保持选中
+            # 当前设备还在，保持选中（插拔别人家的设备不该动你正在操作的这台）
             self.device_var.set(self._format_device_display(current))
-            self.log_message(f"刷新设备列表，保持选中: {current}", "INFO")
+            if not silent:
+                self.log_message(f"刷新设备列表，保持选中: {current}", "INFO")
         else:
             # 选中的设备不在了。先看它是不是"刚开完无线调试然后被拔线的那台"：
             # 有 USB 序列号 -> ip:port 的映射且该无线条目在线，就跟到同一台物理设备上。
@@ -518,8 +587,9 @@ class MainWindow(TkinterDnD_CTk):
             except Exception:
                 pass
 
-        # 终止 adb_helper 管理的子进程
+        # 终止 adb_helper 管理的子进程 / 长连接
         if hasattr(self, 'adb_helper'):
+            self.adb_helper.stop_device_watch()
             self.adb_helper.stop_logcat()
             self.adb_helper.stop_firebase_logcat()
             if self.adb_helper.recording_process:

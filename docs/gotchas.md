@@ -383,3 +383,23 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 - HTTPS 是 **CONNECT 隧道盲转字节，不解密**，所以无需装 CA 证书；代价是看不到/改不了报文内容（本功能也不需要）。
 - 事件循环跑在**后台线程**（`asyncio.new_event_loop` + `run_forever`），GUI 主线程通过 `start/stop/update` 操作，参数用普通 dict 共享靠 GIL。`stop()` 用 `call_soon_threadsafe(loop.stop)` 跨线程停，不能直接 `loop.stop()`。
 - 退出/关代理**必须先清设备 `http_proxy :0` 再关本机服务**，否则设备短暂指向已关闭端口 = 假性断网。主窗口 `on_closing` 已挂 `tab_tools.cleanup_shaper()` 兜底，但那是 best-effort（拿当前 device_id 直清），换设备后残留仍需手动"关闭限速代理"。
+
+### 设备插拔自动刷新：走 adb `host:track-devices` 的 socket 长连接，不是轮询
+
+2026-08 加的。插拔一天也就几次，定时轮询 `adb devices` 要为此全天不停起进程，不划算。
+
+**为什么不是 `adb track-devices` 子命令**：那只是 CLI 封装，部分 platform-tools 版本没有；更要紧的是它意味着一个**长驻的、带 stdout 管道的 adb 子进程**，正好踩在上面「Windows 冷启动死锁」那段描述的形态上。直接连 adb server 的 socket 反而最干净：**无子进程、无管道**，停止时 `shutdown(SHUT_RDWR)` 就能立刻打断阻塞的 `recv`（实测 0.000s，不用等 socket 超时）。`host:track-devices` 是 adb 远古 host 服务，协议（4 位 hex 长度前缀 + payload）多年没变。
+
+实现在 `adb_helper.start_device_watch()` / `_device_watch_loop()`。几个不能改错的地方：
+
+- **重连必须 `_ensure_adb_server(force=True)`**。不 force 的话 `_adb_server_ready` 一旦为 True 就直接返回，adb server 真的挂掉后我们只会对着 refused 的端口无限退避重连，**永远没人把 server 拉起来**。已在运行时 `start-server` <100ms 且幂等，退避下最快 2s 一次，开销可忽略。
+- **读帧分两段超时**（`_read_track_frame`）：等长度头用 `WATCH_SOCK_TIMEOUT=5`（超时是正常的，只为周期性醒来看停止标志）；**长度头一旦读到，payload 必须完整读完**，这里换成 `WATCH_FRAME_TIMEOUT=30` 且超时就判连接坏掉去重连。绝不能沿用「超时就 continue 外层循环」那套——读一半跳走会让后续长度头错位，协议流永久乱掉。
+- **`on_change` 回调在监听线程里执行**，里面碰 UI 必须自己 `after(0)` 且**包 try**（见上一节 4043eba：mainloop 未就绪/窗口已关时 `after` 抛 RuntimeError，不接住线程当场死）。
+- **纯增量，失败只退化不锁死**：watcher 绝不碰 `_refreshing_devices` 和刷新按钮状态。连不上/断线只会退回「跟以前一样手动点刷新」，不引入新的按钮永久 disabled 路径。
+- 首帧只建基线不通知（跟启动时的初始刷新重复）；重连后的首帧要跟 `last` 比对，因为断线期间可能真插拔过。`got_frame`（是否收到过帧）和 `warned`（本轮是否已告警）是两个独立标志，别合用——混用会让「首次连接失败→重连成功」误报一次变化。
+
+UI 侧（`main_window`）：
+
+- 事件触发的刷新走 `refresh_device_list(silent=True)`：不打「正在刷新设备列表...」、不置灰按钮，且**列表跟当前显示完全一致时一行 UI 都不碰**。track-devices 为一次插拔会连推几帧（`offline` → `unauthorized` → `device`），落到 `state=="device"` 的列表上往往并无变化；不短路的话每帧都要重建下拉框（**用户可能正展开着它选设备，重建会让选项在手指落下的过程中重排 → 点错设备**）、联动刷一遍设置页别名表格、再打一行日志。
+- `_schedule_device_autorefresh()` 用可取消的 `after(800)` 把多帧抖动合并成一次刷新。800ms 还兼顾了「设备刚出现时尚未授权完，立刻 `getprop` 拿不到 `ro.serialno`，别名回落不上去」。
+- 撞上手动刷新正在跑时不硬刷（它取到的快照可能早于这次插拔），而是重排一次延时等它结束——`_refreshing_devices` 有 15s 兜底会被复位，不会无限推后。
