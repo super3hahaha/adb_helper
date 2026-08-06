@@ -354,7 +354,9 @@ class MainWindow(TkinterDnD_CTk):
                     self.log_message(f"检测到设备接入: {self._format_device_display(d)}", "SUCCESS")
             for d in prev_ids:
                 if d not in devices:
-                    self.log_message(f"检测到设备断开: {d}", "WARNING")
+                    # 别名按序列号存在 config 里，USB 设备的 device_id 就是序列号，
+                    # 断开后照样查得到；只有无线条目会因拿不到 serialno 而回落成裸 ip:port
+                    self.log_message(f"检测到设备断开: {self._format_device_display(d)}", "WARNING")
 
         # 把已算好的设备列表 + serialno 映射推给设置页的别名表格，让它按
         # serialno 归并同一台设备的 USB/WiFi 两条 entry，且不用自己再跑一遍
@@ -391,7 +393,7 @@ class MainWindow(TkinterDnD_CTk):
             # 当前设备还在，保持选中（插拔别人家的设备不该动你正在操作的这台）
             self.device_var.set(self._format_device_display(current))
             if not silent:
-                self.log_message(f"刷新设备列表，保持选中: {current}", "INFO")
+                self.log_message(f"刷新设备列表，保持选中: {self._format_device_display(current)}", "INFO")
         else:
             # 选中的设备不在了。先看它是不是"刚开完无线调试然后被拔线的那台"：
             # 有 USB 序列号 -> ip:port 的映射且该无线条目在线，就跟到同一台物理设备上。
@@ -400,11 +402,15 @@ class MainWindow(TkinterDnD_CTk):
             followed = self.adb_helper.wireless_addr_by_serial.get(current)
             if followed and followed in devices:
                 new_device = followed
-                self.log_message(f"设备 {current} 已拔线，自动跟随到它的无线连接: {new_device}", "SUCCESS")
+                self.log_message(
+                    f"设备 {self._format_device_display(current)} 已拔线，"
+                    f"自动跟随到它的无线连接: {self._format_device_display(new_device)}",
+                    "SUCCESS",
+                )
             else:
                 # 默认选中第一个
                 new_device = devices[0]
-                self.log_message(f"自动选中设备: {new_device}", "SUCCESS")
+                self.log_message(f"自动选中设备: {self._format_device_display(new_device)}", "SUCCESS")
             self.device_var.set(self._format_device_display(new_device))
             self.adb_helper.current_device_id = new_device
 
