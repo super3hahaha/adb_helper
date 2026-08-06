@@ -31,6 +31,16 @@ class WirelessManagerWindow(ctk.CTkToplevel):
         self._saved_vars = {}       # addr -> BooleanVar
         self._busy = False
 
+        # 统一复选框样式：默认样式方框偏大、边框偏粗，这里改小一号、描边更细、
+        # 圆角，勾选色跟"刷新"按钮的蓝色呼应
+        self._checkbox_style = dict(
+            checkbox_width=18, checkbox_height=18,
+            corner_radius=4, border_width=1.5,
+            border_color=("gray70", "gray45"),
+            fg_color="#3B8ED0", hover_color="#36699e",
+            font=ctk.CTkFont(size=13),
+        )
+
         self.title("无线设备管理")
         self.geometry("560x620")
         self.minsize(480, 520)
@@ -136,7 +146,7 @@ class WirelessManagerWindow(ctk.CTkToplevel):
                 label = f"{alias} ({addr})"
             if addr == current:
                 label += "  ← 当前操作设备"
-            ctk.CTkCheckBox(row, text=label, variable=var).pack(side="left")
+            ctk.CTkCheckBox(row, text=label, variable=var, **self._checkbox_style).pack(side="left")
 
         btns = ctk.CTkFrame(card, fg_color="transparent")
         btns.pack(fill="x", padx=12, pady=(6, 10))
@@ -179,7 +189,7 @@ class WirelessManagerWindow(ctk.CTkToplevel):
                 parts.append(f"· {item['last_seen']}")
             if is_online:
                 parts.append("· 已连接")
-            cb = ctk.CTkCheckBox(row, text="  ".join(parts), variable=var)
+            cb = ctk.CTkCheckBox(row, text="  ".join(parts), variable=var, **self._checkbox_style)
             cb.grid(row=0, column=0, sticky="w")
             if is_online:
                 cb.configure(state="disabled")
