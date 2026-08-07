@@ -185,7 +185,7 @@ class AppManageTab(ctk.CTkFrame):
             else:
                 self.log(f"安装失败: {os.path.basename(file_path)}\n{output}", "ERROR")
                 
-        threading.Thread(target=_install_thread, daemon=True).start()
+        self.adb_helper.spawn(_install_thread)
 
     def refresh_app_list(self):
         """Refresh the app list from config."""
@@ -288,7 +288,7 @@ class AppManageTab(ctk.CTkFrame):
                 self._handle_auto_launch(pkg)
             except Exception as e:
                 self.log(f"强制停止失败: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_launch_app(self):
         if not self.current_app_pkg:
@@ -301,7 +301,7 @@ class AppManageTab(ctk.CTkFrame):
                 self.log(f"已启动 {pkg}", "SUCCESS")
             except Exception as e:
                 self.log(f"启动 App 失败: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_take_screenshot(self):
         temp_dir = self.config_manager.get_temp_dir()
@@ -502,7 +502,7 @@ class AppManageTab(ctk.CTkFrame):
                     self.apk_selector.set("未找到匹配的 APK" if keyword else "目录中无 APK")
             self.after(0, _update_ui)
 
-        threading.Thread(target=_scan, daemon=True).start()
+        self.adb_helper.spawn(_scan)
 
     def action_install_apk(self):
         selection = self.apk_selector.get()
@@ -544,4 +544,4 @@ class AppManageTab(ctk.CTkFrame):
             from ui.components.firebase_window import FirebaseWindow
             self.firebase_window = FirebaseWindow(self.winfo_toplevel(), self.adb_helper, pkg)
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)

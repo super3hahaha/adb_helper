@@ -25,14 +25,19 @@ def _format_size(raw) -> str:
 class DeviceFileManagerWindow(ctk.CTkToplevel):
     def __init__(self, parent, adb_helper, config_manager):
         super().__init__(parent)
-        self.title("设备文件管理器")
         self.geometry("800x600")
-        
+
         # 绑定主从关系，隐藏独立任务栏图标，并始终保持在主窗口上方
         self.transient(parent.winfo_toplevel())
-        
+
         self.adb_helper = adb_helper
         self.config_manager = config_manager
+
+        # 本窗口钉死在开窗时那台设备上：窗口可能开很久，期间用户会切下拉框，
+        # 而这里的删除/下载是不可逆操作，绝不能跟着漂到别的设备上去
+        self.device_id = adb_helper.current_device_id
+        label = adb_helper.device_label(self.device_id)
+        self.title(f"设备文件管理器 - {label}" if label else "设备文件管理器")
         
         # Get default path from config
         self.current_path = self.config_manager.get_default_device_pull_path()
@@ -171,7 +176,7 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
             except Exception as e:
                 self.after(0, self._on_load_complete, False, str(e))
                 
-        threading.Thread(target=_load, daemon=True).start()
+        self.adb_helper.spawn(_load, device_id=self.device_id)
 
     def _on_load_complete(self, success, result):
         if not success:
@@ -230,7 +235,7 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
             success, msg = self.adb_helper.pull_files(remote_paths, local_dir)
             self.after(0, self._on_pull_complete, success, msg)
             
-        threading.Thread(target=_pull, daemon=True).start()
+        self.adb_helper.spawn(_pull, device_id=self.device_id)
 
     def _on_pull_complete(self, success, msg):
         self.update_status("导出成功" if success else "导出部分失败")
@@ -279,7 +284,7 @@ class DeviceFileManagerWindow(ctk.CTkToplevel):
                     success_count += 1
             self.after(0, self._on_delete_complete, success_count, len(remote_paths))
             
-        threading.Thread(target=_delete, daemon=True).start()
+        self.adb_helper.spawn(_delete, device_id=self.device_id)
 
     def _on_delete_complete(self, success_count, total_count):
         self.update_status(f"删除完成: {success_count}/{total_count}")

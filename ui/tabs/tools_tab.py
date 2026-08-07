@@ -17,6 +17,9 @@ class ToolsTab(ctk.CTkFrame):
         # 精确弱网限速代理（延迟到首次开启时才真正 start）
         self.shaper = ThrottleProxy(log=self.log)
         self._shaper_applied = None   # 上次已推给代理的 (delay, rate, loss)，用于去重
+        # 代理指向的是哪台设备。shaper 服务本身是单例，关闭时必须回原设备清 http_proxy——
+        # 若跟着下拉框走，会把代理留在原设备上而服务已停，那台设备直接断网
+        self._shaper_device_id = None
 
         self.setup_ui()
 
@@ -290,7 +293,7 @@ class ToolsTab(ctk.CTkFrame):
         def _thread():
             try:
                 # 1. 获取路径
-                cmd = [self.adb_helper.adb_cmd, "-s", self.adb_helper.current_device_id, "shell", "settings", "get", "system", sound_type]
+                cmd = [self.adb_helper.adb_cmd, "-s", self.adb_helper.active_device_id, "shell", "settings", "get", "system", sound_type]
                 
                 kwargs = self.adb_helper._get_subprocess_kwargs()
                 
@@ -314,7 +317,7 @@ class ToolsTab(ctk.CTkFrame):
                 self.log(f"获取到 URI: {clean_uri}", "INFO")
                 
                 # 3. 执行播放
-                play_cmd = [self.adb_helper.adb_cmd, "-s", self.adb_helper.current_device_id, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"'{clean_uri}'", "-t", "audio/*"]
+                play_cmd = [self.adb_helper.adb_cmd, "-s", self.adb_helper.active_device_id, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"'{clean_uri}'", "-t", "audio/*"]
                 play_result = subprocess.run(play_cmd, **kwargs)
                 
                 # am start 命令如果成功，通常会输出 "Starting: Intent { ... }"
@@ -328,7 +331,7 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"试听铃声异常: {e}", "ERROR")
                 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def _reset_push_path(self):
         self.entry_remote_path.delete(0, "end")
@@ -379,7 +382,7 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e: # 捕获 NoDeviceConnectedError 等异常
                 self.log(f"导入文件中止或异常: {e}", "ERROR")
                 
-        threading.Thread(target=_push_thread, daemon=True).start()
+        self.adb_helper.spawn(_push_thread)
 
     def on_category_change(self, value):
         if value == "设备与系统控制":
@@ -423,7 +426,7 @@ class ToolsTab(ctk.CTkFrame):
                 if loading_dialog:
                     self.after(0, loading_dialog.destroy)
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_send_raw_text(self):
         text = self.entry_raw_input_text.get()
@@ -436,7 +439,7 @@ class ToolsTab(ctk.CTkFrame):
                 self.log(f"已通过模拟按键发送: {text}", "SUCCESS")
             except Exception as e:
                 self.log(f"模拟按键发送异常: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_get_input_text(self):
         def _thread():
@@ -458,7 +461,7 @@ class ToolsTab(ctk.CTkFrame):
                     self.log(f"获取输入框内容失败: {result}", "ERROR")
             self.after(0, _finish)
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_start_wireless_debug(self):
         """为当前选中的设备开启无线调试。
@@ -573,7 +576,7 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"清除 Google Play 数据异常: {e}", "ERROR")
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_enable_gesture_nav(self):
         def _thread():
@@ -585,7 +588,7 @@ class ToolsTab(ctk.CTkFrame):
                     self.log(f"切换全面屏手势失败: {output}", "ERROR")
             except Exception as e:
                 self.log(f"切换全面屏手势异常: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_enable_threebutton_nav(self):
         def _thread():
@@ -597,13 +600,13 @@ class ToolsTab(ctk.CTkFrame):
                     self.log(f"切换三键导航失败: {output}", "ERROR")
             except Exception as e:
                 self.log(f"切换三键导航异常: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     FAKE_DNS_HOST = "fake.domain.test"
 
     def _run_adb_settings_cmd(self, args, action_label):
         """执行一条 adb settings 命令，打印命令与结果日志。返回 (ok, stdout)。"""
-        device_id = self.adb_helper.current_device_id
+        device_id = self.adb_helper.active_device_id
         if not device_id:
             self.log(f"未选择设备，无法执行{action_label}", "ERROR")
             return False, ""
@@ -631,7 +634,7 @@ class ToolsTab(ctk.CTkFrame):
                 "开启高延迟/慢网",
             )
             self.refresh_proxy_status(verbose=True)
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_disable_fake_proxy(self):
         """清除 HTTP 代理"""
@@ -641,7 +644,7 @@ class ToolsTab(ctk.CTkFrame):
                 "清除假代理",
             )
             self.refresh_proxy_status(verbose=True)
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_enable_fake_dns(self):
         """将 Private DNS 指向不可解析的域名，模拟网络超时/彻底断网"""
@@ -656,7 +659,7 @@ class ToolsTab(ctk.CTkFrame):
                     "开启网络超时",
                 )
             self.refresh_proxy_status(verbose=True)
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_disable_fake_dns(self):
         """恢复 Private DNS 为自动模式"""
@@ -666,7 +669,7 @@ class ToolsTab(ctk.CTkFrame):
                 "恢复正常DNS",
             )
             self.refresh_proxy_status(verbose=True)
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def refresh_proxy_status(self, verbose=False):
         """后台执行 adb shell settings get 读取真实值，综合更新状态标签。
@@ -676,7 +679,7 @@ class ToolsTab(ctk.CTkFrame):
         """
         def _thread():
             try:
-                device_id = self.adb_helper.current_device_id
+                device_id = self.adb_helper.active_device_id
                 if not device_id:
                     self.after(0, lambda: self.lbl_proxy_status.configure(text="当前状态：无设备", text_color="gray"))
                     return
@@ -719,7 +722,7 @@ class ToolsTab(ctk.CTkFrame):
                 if verbose:
                     self.log(f"状态查询异常: {e}", "ERROR")
                 self.after(0, lambda: self.lbl_proxy_status.configure(text="当前状态：未知", text_color="gray"))
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     # ==================== 精确弱网模拟（限速代理） ====================
 
@@ -811,6 +814,7 @@ class ToolsTab(ctk.CTkFrame):
                     "开启限速代理",
                 )
                 if ok:
+                    self._shaper_device_id = self.adb_helper.active_device_id
                     self.log(f"弱网参数: 延迟{delay}ms / 限速{rate}KB/s / 丢包{loss}%", "SUCCESS")
                     self.after(0, lambda: self.lbl_shaper_status.configure(
                         text="生效中", text_color="#2e7d32"))
@@ -818,7 +822,7 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"开启限速代理失败: {e}", "ERROR")
                 self.after(0, lambda: self.lbl_shaper_status.configure(text="启动失败", text_color="#c42b1c"))
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_stop_shaper(self):
         def _thread():
@@ -828,16 +832,19 @@ class ToolsTab(ctk.CTkFrame):
                 self.shaper.stop()
             except Exception as e:
                 self.log(f"停止限速代理异常: {e}", "WARNING")
+            self._shaper_device_id = None
             self.after(0, lambda: self.lbl_shaper_status.configure(text="未开启", text_color="gray"))
             self.refresh_proxy_status()
-        threading.Thread(target=_thread, daemon=True).start()
+        # 绑回代理实际生效的那台设备，不能跟着当前选中走
+        self.adb_helper.spawn(_thread, device_id=self._shaper_device_id)
 
     def cleanup_shaper(self):
         """主窗口关闭时调用：若代理在跑，清掉设备 http_proxy 并停服务。"""
         if not self.shaper.is_running():
             return
         try:
-            device_id = self.adb_helper.current_device_id
+            # 清代理必须打回开启时那台设备，退出前用户很可能已经切走了
+            device_id = self._shaper_device_id or self.adb_helper.current_device_id
             if device_id:
                 subprocess.run(
                     [self.adb_helper.adb_cmd, "-s", device_id, "shell", "settings",
@@ -858,7 +865,7 @@ class ToolsTab(ctk.CTkFrame):
                 self.log("已唤起设备系统时间设置页", "SUCCESS")
             except Exception as e:
                 self.log(f"唤起时间设置失败: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_open_language_settings(self):
         def _thread():
@@ -867,7 +874,7 @@ class ToolsTab(ctk.CTkFrame):
                 self.log("已唤起设备系统语言设置页", "SUCCESS")
             except Exception as e:
                 self.log(f"唤起语言设置失败: {e}", "ERROR")
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_query_device_info(self):
         def _thread():
@@ -877,7 +884,7 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"查询设备信息失败: {e}", "ERROR")
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_show_screen_info(self):
         """查询设备屏幕信息（分辨率/密度/状态栏/导航栏/刘海/Configuration），弹窗展示。"""
@@ -886,6 +893,13 @@ class ToolsTab(ctk.CTkFrame):
             return
 
         self.btn_screen_info.configure(state="disabled", text="查询中...")
+        # 弹窗可能停留很久，期间用户会切设备。刷新按钮必须打回弹窗归属的那台，
+        # 否则会把别的设备的分辨率刷进这个窗口里
+        dev = self.adb_helper.current_device_id
+
+        def _refresh_bound():
+            with self.adb_helper.bind_device(dev):
+                return self.adb_helper.get_screen_info(force_refresh=True)
 
         def _thread():
             err = None
@@ -904,13 +918,13 @@ class ToolsTab(ctk.CTkFrame):
                 from ui.components.screen_info_dialog import ScreenInfoDialog
                 ScreenInfoDialog(
                     self, info, log_func=self.log,
-                    refresh_fn=lambda: self.adb_helper.get_screen_info(force_refresh=True),
+                    refresh_fn=_refresh_bound,
                 )
                 self.log("已查询屏幕信息", "SUCCESS")
 
             self.after(0, _on_done)
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def action_contact_ringtone(self):
         self.btn_contact_ringtone.configure(state="disabled", text="⏳ 正在读取通讯录...")
@@ -935,7 +949,7 @@ class ToolsTab(ctk.CTkFrame):
                 self.log(f"读取通讯录异常: {e}", "ERROR")
                 self.after(0, lambda: self.btn_contact_ringtone.configure(state="normal", text="试听联系人铃声"))
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)
 
     def open_device_file_manager(self):
         from ui.components.file_manager_window import DeviceFileManagerWindow

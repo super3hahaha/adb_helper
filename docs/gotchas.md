@@ -327,6 +327,52 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 - 重截不让子进程碰 adb，走 IPC 回主进程调 `adb_helper.take_screenshot`（serial/别名/尺寸后缀天然正确）；`on_complete` 在 adb 工作线程触发，launcher 里只做带锁的 stdin 写，不碰 Tk
 - **QGraphicsView 平移受滚动范围钳制**：sceneRect=图像时，图像整幅可见（初始 fit 缩放）滚动范围为 0，✋/空格平移完全拖不动。解法是 `update_scene_margins()` 给场景四周扩一圈视口大小的余量（缩放/视口 resize 时都要更新），恢复 Tk 版自由平移。扩余量后滚动条必须 `ScrollBarAlwaysOn`：按需显示的话，初始 fit 按"无滚动条视口"计算 → 滚动条随后出现挤掉一条边 → 图像底部被遮一截。另：所有按钮/滑块要 `setFocusPolicy(NoFocus)`，否则空格会触发聚焦按钮而不是临时平移
 
+## 多设备并行
+
+### 设备号必须显式绑定到线程，不能靠全局 `current_device_id`
+
+2026-08-07 支持"设备1的操作跑着时切到设备2继续干活"。adb 侧本来就并行（每条命令是独立进程，adb server 多路复用，代码里也没有全局执行锁），唯一的障碍是 `current_device_id` 这个**隐式全局参数**——所有命令在执行的瞬间才去读它，长流程必然串台。
+
+机制（`core/adb_helper.py`）：
+
+| 名字 | 语义 |
+|---|---|
+| `current_device_id` | 仅表示"UI 下拉框选中哪台"，随用户切换而变 |
+| `active_device_id` | **本次调用实际打给谁**。线程绑过用绑的，否则回落 current |
+| `bind_device(id)` | contextmanager，把当前线程钉在某台设备上 |
+| `spawn(fn, args, device_id=None)` | 起线程并把绑定带过去；`device_id` 显式指定目标 |
+
+规则：
+
+- **凡是拼 `-s <id>` 的地方一律读 `active_device_id`**，core 和 UI 都是。直接读 `current_device_id` 的只剩三类：UI 选中态的读写、点按钮那一刻的快照、"请先选择设备"的前置校验。
+- **设备操作不要裸起 `threading.Thread`，用 `adb_helper.spawn(fn)`**。`threading.local` 不跨线程继承，裸线程会退回读 `current_device_id`。UI 主线程调 `spawn` 时 bound 取到的正是"点按钮那一刻"的选中设备，等于自动快照。纯本地/全局的活（刷设备列表、读子进程 IO、无线 connect）不必走。
+- **`run_adb_async` 的 `on_complete` 在绑定内执行**。这是最初的 bug 源头：安装完自动启动 App 是回调里干的，不绑定就会在用户切走后把 monkey 打到新设备上——现象是"装成功了但 App 打不开"，或者更隐蔽地启动了另一台机器上的同名 App。
+
+### 跨越用户切换的长驻状态，必须自己记住设备
+
+只绑线程不够——有些状态活得比一次调用长，它们要各自存一份 device_id：
+
+- **录屏**：`recording_device_id`（开录时记）。`recording_process` 是单份的，停止时要回原设备 pull 视频、rm 远端文件。不记的话切走后"停止录制"会去另一台 pull 一个不存在的文件，视频永久丢失。
+- **限速代理**：`ToolsTab._shaper_device_id`。shaper 服务是单例，关闭时**必须回原设备清 `http_proxy`**——清错设备的后果是原设备一直指着已关闭的本机端口，**直接断网**。`cleanup_shaper`（退出时）同样要用它。
+- **文件管理器窗口**：`DeviceFileManagerWindow.device_id`（开窗时记，标题栏显示别名）。里面的删除/下载是不可逆操作，绝不能跟着下拉框漂。
+- **屏幕信息弹窗**：`refresh_fn` 在 `tools_tab` 侧就包好 `bind_device`。弹窗会停留很久，刷新按钮不绑就会把别的设备的分辨率刷进这个窗口。
+- **Firebase 窗口**：有意**跟随**设备切换（`reset_for_new_device`），但切走时要先回旧设备关掉 `debug.firebase.analytics.app`，否则那台永远留着 debug 开关。
+- **Logcat 窗口**：同样是有意跟随的既有设计，不要改成钉死。
+
+判断标准：**这个状态的生命周期会不会跨越一次用户切换？** 会就得自己存 device_id。
+
+### 自动旋转还原不再检查"用户是否切走"
+
+`_restore_accelerometer_rotation` 原本在 `current_device_id != device_id` 时跳过还原，那是单设备时代的保守做法。并行后这条链路始终定向到 device_id，用户在看哪台跟该不该还原无关——**切走了更要还原**，否则后台设备被永久留在改脏的状态。
+
+### 日志前缀只在多设备时出现
+
+`log()` 的规则：线程绑了设备一律加 `[别名]` 前缀；没绑定的前台操作只在 `multi_device_mode`（由 `_apply_device_list` 按 `len(devices) > 1` 同步）时才加。单设备下每行都带前缀纯属噪音，而并行时不带就完全分不清谁在说话。
+
+### 已知不做的部分
+
+**按钮禁用仍是全局的**（`btn_screen_info` / 刷新 APK / Firebase 等）：设备1查询期间设备2也点不了那个按钮。不影响并行的正确性，只是体验别扭，实测撞上概率低——安装按钮本来就不禁用，主路径不受影响。同理没做"后台有 N 个任务"的状态栏，日志会持续输出，够用。
+
 ## 无线调试（多设备）
 
 ### 无线调试的多设备约束：一台机器两条 entry，且 device_id 会变

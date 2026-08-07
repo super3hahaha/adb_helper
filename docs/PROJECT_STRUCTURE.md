@@ -7,7 +7,8 @@ adb_helper/
 ├── start.bat                # Windows 快速启动脚本
 ├── requirements.txt         # Python 依赖清单
 ├── core/                    # 核心业务逻辑
-│   ├── adb_helper.py        # ADB 命令封装与设备管理
+│   ├── adb_helper.py        # ADB 命令封装与设备管理（含多设备并行的线程绑定：
+│   │                        #   active_device_id / bind_device / spawn，见 gotchas）
 │   ├── config.py            # 应用级常量：APP_VERSION / APP_NAME / GITHUB_REPO
 │   ├── config_manager.py    # 配置读写与持久化
 │   ├── screen_info_cache.py # 屏幕信息缓存（per-device + per-rotation，落盘到 appdata）

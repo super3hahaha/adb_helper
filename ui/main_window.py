@@ -368,6 +368,9 @@ class MainWindow(TkinterDnD_CTk):
             except Exception as e:
                 self.log_message(f"同步设备别名列表失败: {e}", "WARNING")
 
+        # 多设备时日志要标出每条属于哪台，单设备则保持清爽
+        self.adb_helper.multi_device_mode = len(devices) > 1
+
         if not devices:
             self._device_display_map = {}
             self.device_selector.configure(values=[])

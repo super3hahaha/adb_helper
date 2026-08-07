@@ -240,7 +240,7 @@ class LogcatWindow(ctk.CTkToplevel):
         # 如果当前过滤器是包名，启动时异步抓一次真实 PID
         pkg = self.entry_pkg.get().strip()
         if pkg and "." in pkg:
-            threading.Thread(target=self._refresh_app_pids, args=(pkg,), daemon=True).start()
+            self.adb_helper.spawn(self._refresh_app_pids, args=(pkg,))
 
         # Start polling
         self.update_logs()
@@ -253,7 +253,7 @@ class LogcatWindow(ctk.CTkToplevel):
         if not pkg or "." not in pkg:
             return
 
-        device_id = getattr(self.adb_helper, "current_device_id", None)
+        device_id = getattr(self.adb_helper, "active_device_id", None)
         adb_cmd = getattr(self.adb_helper, "adb_cmd", None)
         if not device_id or not adb_cmd:
             return
@@ -476,7 +476,7 @@ class LogcatWindow(ctk.CTkToplevel):
             self.last_pkg_filter = pkg_filter
             # 过滤器变成包名时，异步刷新真实 PID
             if "." in pkg_filter:
-                threading.Thread(target=self._refresh_app_pids, args=(pkg_filter,), daemon=True).start()
+                self.adb_helper.spawn(self._refresh_app_pids, args=(pkg_filter,))
 
         # 尝试提取 PID
         # 格式通常为: "03-17 11:44:24.715 E/AndroidRuntime( 9734):" -> PID 9734

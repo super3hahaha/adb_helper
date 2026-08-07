@@ -49,4 +49,4 @@ class ContactRingtoneDialog(ctk.CTkToplevel):
             finally:
                 self.after(0, lambda: self.btn_play.configure(state="normal", text="▶️ 播放该联系人铃声"))
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.adb_helper.spawn(_thread)

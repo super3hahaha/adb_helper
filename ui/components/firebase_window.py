@@ -5,11 +5,14 @@ import re
 class FirebaseWindow(ctk.CTkToplevel):
     def __init__(self, parent, adb_helper, package_name):
         super().__init__(parent)
-        self.title(f"Firebase 实时监控 - {package_name}")
         self.geometry("900x500")
-        
+
         self.adb_helper = adb_helper
         self.package_name = package_name
+        # 监控窗口长驻，关窗时要回原设备关掉 debug 开关，不能跟着下拉框漂
+        self.device_id = adb_helper.current_device_id
+        label = adb_helper.device_label(self.device_id)
+        self.title(f"Firebase 实时监控 - {package_name}" + (f" @ {label}" if label else ""))
         self.is_running = True
         self.log_queue = None
         self.raw_lines = []  # 全量原始日志缓存，用于过滤条件变化时整体重新渲染
@@ -237,11 +240,28 @@ class FirebaseWindow(ctk.CTkToplevel):
         """设备切换时重置，重新获取新设备的 firebase 日志"""
         self.adb_helper.stop_firebase_logcat()
         self.clear_logs()
+
+        # 本窗口跟随切换，但旧设备上已经被打开的 debug 开关得回去关掉，
+        # 否则那台设备会一直留着 debug.firebase.analytics.app 没人清
+        old_device = self.device_id
+        if old_device and old_device != self.adb_helper.current_device_id:
+            self.adb_helper.spawn(self._disable_debug_on_device, device_id=old_device)
+
+        self.device_id = self.adb_helper.current_device_id
+        label = self.adb_helper.device_label(self.device_id)
+        self.title(f"Firebase 实时监控 - {self.package_name}" + (f" @ {label}" if label else ""))
+
         try:
             self.adb_helper.enable_firebase_debug(self.package_name)
             self.log_queue = self.adb_helper.start_firebase_logcat()
         except Exception:
             self.log_queue = None
+
+    def _disable_debug_on_device(self):
+        """关闭 Firebase 调试开关。目标设备由调用方通过 spawn(device_id=...) 绑定。"""
+        self.adb_helper.execute_adb_command(
+            ["adb", "shell", "setprop", "debug.firebase.analytics.app", ".none."]
+        )
 
     def on_close(self):
         self.is_running = False
@@ -250,9 +270,6 @@ class FirebaseWindow(ctk.CTkToplevel):
         self.adb_helper.stop_firebase_logcat()
         
         # 顺手关闭该 App 的 Firebase 调试模式 (后台执行，不阻塞 UI)
-        def _disable_debug():
-            self.adb_helper.execute_adb_command(["adb", "shell", "setprop", "debug.firebase.analytics.app", ".none."])
-            
-        threading.Thread(target=_disable_debug, daemon=True).start()
+        self.adb_helper.spawn(self._disable_debug_on_device, device_id=self.device_id)
         
         self.destroy()

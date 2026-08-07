@@ -7,6 +7,7 @@ import os
 import queue
 import socket
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from core.platform_utils import PlatformUtils
 
 class NoDeviceConnectedError(Exception):
@@ -25,8 +26,16 @@ class ADBHelper:
         self.log_callback = log_callback
         self.logcat_process = None
         self.recording_process = None
+        # 正在录屏的那台设备。录制横跨数分钟，停止时必须打回原设备去 pull 视频，
+        # 不能读 UI 当前选中（用户很可能已经切到别的设备上干别的事了）
+        self.recording_device_id = None
         self.log_queue = None
-        self.current_device_id = None # 当前选中的设备序列号
+        self.current_device_id = None # UI 下拉框当前选中的设备序列号（仅代表"用户在看哪台"）
+        # 线程绑定的目标设备（见 bind_device）。后台任务在启动时快照设备号并绑到自己线程上，
+        # 之后即使用户切换下拉框，这条任务链路仍然打在原设备上。
+        self._tls = threading.local()
+        # 是否同时连着多台设备（由 UI 刷新设备列表时同步）。只影响日志要不要标设备名
+        self.multi_device_mode = False
         # 由外部注入：device_id -> 别名 的解析函数（无则回退到序列号）
         self.device_label_resolver = None
         # USB 序列号 -> 该设备的无线地址 "ip:port"。开启无线调试时写入，
@@ -43,40 +52,118 @@ class ADBHelper:
         # ADB 路径适配
         self.adb_cmd = PlatformUtils.get_adb_executable()
 
-    def _device_label_for_filename(self):
-        """返回用于文件名的设备标签：有别名优先用别名，否则用序列号。已做合法化处理。"""
-        if not self.current_device_id:
+    # --- 多设备并行：线程绑定设备 ---
+
+    @property
+    def active_device_id(self):
+        """本次调用应该打到哪台设备。
+
+        线程绑过就用绑的（后台任务），没绑才回落到 UI 当前选中（前台即时操作）。
+        所有会拼 `-s <id>` 的地方一律读这个属性，不要直接读 current_device_id ——
+        后者会随用户切换下拉框而变，长流程读它必然串台。
+        """
+        return getattr(self._tls, "device_id", None) or self.current_device_id
+
+    @contextmanager
+    def bind_device(self, device_id):
+        """把当前线程钉在指定设备上，退出时还原。
+
+        典型用法（UI 侧发起后台任务）：
+
+            dev = helper.current_device_id      # 点按钮那一刻快照
+            def _worker():
+                with helper.bind_device(dev):   # 整条链路都打在 dev 上
+                    helper.install_apk(...)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        注意 threading.local 不跨线程继承：任务内部再起子线程时，必须在子线程里
+        重新 bind（run_adb_async / take_screenshot 等已代为处理）。
+        """
+        prev = getattr(self._tls, "device_id", None)
+        self._tls.device_id = device_id
+        try:
+            yield
+        finally:
+            self._tls.device_id = prev
+
+    def spawn(self, target, args=(), daemon=True, device_id=None):
+        """起后台线程并把当前线程的设备绑定带过去。
+
+        threading.local 不跨线程继承，凡是自己起线程干设备活的地方都得走这里，
+        否则新线程会退回读 current_device_id —— 用户一切下拉框就跑偏。
+
+        UI 侧在主线程调用时，bound 取到的就是"点按钮那一刻"的选中设备，
+        等于自动完成快照，所以设备操作一律用 helper.spawn(fn) 代替裸线程。
+        纯本地/全局的活（刷设备列表、读子进程 IO）不必走这里。
+
+        device_id 显式指定目标设备，供长驻窗口使用：文件管理器/Logcat 这类窗口
+        开着的时候用户随时会切下拉框，它们必须钉在开窗时那台，不能跟着漂。
+        """
+        bound = device_id or getattr(self._tls, "device_id", None) or self.current_device_id
+
+        def _runner():
+            with self.bind_device(bound):
+                target(*args)
+
+        t = threading.Thread(target=_runner, daemon=daemon)
+        t.start()
+        return t
+
+    def device_label(self, device_id=None):
+        """device_id 的展示名：有别名用别名，否则用序列号。"""
+        device_id = device_id or self.active_device_id
+        if not device_id:
             return ""
-        alias = ""
         if self.device_label_resolver:
             try:
-                alias = (self.device_label_resolver(self.current_device_id) or "").strip()
+                alias = (self.device_label_resolver(device_id) or "").strip()
+                if alias:
+                    return alias
             except Exception:
-                alias = ""
-        label = alias if alias else self.current_device_id
+                pass
+        return device_id
+
+    def _device_label_for_filename(self):
+        """返回用于文件名的设备标签：有别名优先用别名，否则用序列号。已做合法化处理。"""
+        if not self.active_device_id:
+            return ""
+        label = self.device_label(self.active_device_id)
         # 替换文件名非法字符和空白
         label = re.sub(r'[\\/:*?"<>|\s]+', '_', label).strip('_')
         return label
 
     def log(self, message, level="INFO"):
+        # 多设备并行时日志会交织，得标清楚是谁在说话：
+        # - 线程绑了设备 = 某台设备的后台任务，一律加前缀
+        # - 只连了一台时前台操作不加，避免每行都是重复噪音
+        # 全局操作（刷设备列表、无线连接）不绑定也没有 current，自然不带前缀
+        bound = getattr(self._tls, "device_id", None)
+        target = bound or (self.current_device_id if self.multi_device_mode else None)
+        if target:
+            message = f"[{self.device_label(target)}] {message}"
         if self.log_callback:
             self.log_callback(message, level)
         else:
             print(f"[{level}] {message}")
 
     def run_adb_async(self, cmd_list, on_complete=None, check_dev=True, timeout=None):
-        """启动新线程执行 ADB 命令"""
+        """启动新线程执行 ADB 命令。调用线程的设备绑定会带进新线程。"""
+        bound = getattr(self._tls, "device_id", None) or self.current_device_id
+
         def _wrapper():
-            try:
-                success, _ = self.execute_adb_command(cmd_list, check_dev=check_dev, timeout=timeout)
-            except NoDeviceConnectedError:
-                success = False
-                
-            if on_complete:
+            # on_complete 也在绑定内执行：安装完自动启动 App 这类后续动作必须
+            # 跟安装打在同一台设备上，否则用户中途切下拉框就会启动到别人机器上
+            with self.bind_device(bound):
                 try:
-                    on_complete(success)
-                except TypeError:
-                    on_complete()
+                    success, _ = self.execute_adb_command(cmd_list, check_dev=check_dev, timeout=timeout)
+                except NoDeviceConnectedError:
+                    success = False
+
+                if on_complete:
+                    try:
+                        on_complete(success)
+                    except TypeError:
+                        on_complete()
         threading.Thread(target=_wrapper, daemon=True).start()
 
     # 默认超时（秒）。设备休眠/未授权/USB 异常时，adb 可能永久阻塞，
@@ -112,7 +199,7 @@ class ADBHelper:
 
     def _wait_for_device_reconnect(self, max_wait=None, poll_interval=2):
         """设备掉线后阻塞等待其重新出现在 `adb devices` 列表，供 push 重试前调用。"""
-        device_id = self.current_device_id
+        device_id = self.active_device_id
         if not device_id:
             return
         max_wait = self.PUSH_RECONNECT_WAIT if max_wait is None else max_wait
@@ -352,7 +439,7 @@ class ADBHelper:
                     # 注入后变为 ["adb", "-s", "device_id", "shell", "ls"]
                     if cmd_list[0] == self.adb_cmd and "-s" not in cmd_list:
                         cmd_list.insert(1, "-s")
-                        cmd_list.insert(2, self.current_device_id)
+                        cmd_list.insert(2, self.active_device_id)
                 except NoDeviceConnectedError as e:
                     self.log(f"操作中止: {e}", "ERROR")
                     raise e # 向上抛出以便 UI 层拦截
@@ -433,7 +520,7 @@ class ADBHelper:
 
     def check_device(self):
         """检查是否有选中的设备，且该设备在线"""
-        if not self.current_device_id:
+        if not self.active_device_id:
             raise NoDeviceConnectedError("当前未选择任何设备")
             
         # 可选：每次执行前检查设备是否还在连着，但这会增加每次命令的耗时
@@ -485,9 +572,9 @@ class ADBHelper:
         """直接执行 adb -s <id> <args>，不打印结果到 log。
         专用于 dumpsys 这类大输出查询，避免污染全局日志面板。
         """
-        if not self.current_device_id:
+        if not self.active_device_id:
             return ""
-        cmd = [self.adb_cmd, "-s", self.current_device_id] + list(args)
+        cmd = [self.adb_cmd, "-s", self.active_device_id] + list(args)
         self._ensure_adb_server()
         try:
             result = subprocess.run(cmd, **self._get_subprocess_kwargs(timeout=self.SHELL_TIMEOUT))
@@ -521,7 +608,7 @@ class ADBHelper:
         cache_key = self._get_orientation_key()
 
         if not force_refresh and cache_key is not None:
-            cached = screen_info_cache.get(self.current_device_id, cache_key)
+            cached = screen_info_cache.get(self.active_device_id, cache_key)
             if cached:
                 return cached
 
@@ -785,7 +872,7 @@ class ADBHelper:
 
         # 写入缓存（按设备 + Configuration 串）。key 取不到时不写，避免污染
         if cache_key is not None:
-            screen_info_cache.put(self.current_device_id, cache_key, info)
+            screen_info_cache.put(self.active_device_id, cache_key, info)
 
         return info
 
@@ -911,14 +998,14 @@ class ADBHelper:
         def _seq():
             self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "unplug"])
             self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "set", "level", "10"])
-        threading.Thread(target=_seq, daemon=True).start()
+        self.spawn(_seq)
 
     def sim_full_battery(self):
         def _seq():
             self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "set", "ac", "1"])
             self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "set", "status", "5"])
             self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "set", "level", "100"])
-        threading.Thread(target=_seq, daemon=True).start()
+        self.spawn(_seq)
 
     def reset_battery(self):
         self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "reset"])
@@ -942,7 +1029,7 @@ class ADBHelper:
         self.stop_logcat()  # Ensure previous session is stopped
         
         self.log_queue = queue.Queue()
-        cmd = [self.adb_cmd, "-s", self.current_device_id, "logcat", "-v", "time", f"*:{log_level}"]
+        cmd = [self.adb_cmd, "-s", self.active_device_id, "logcat", "-v", "time", f"*:{log_level}"]
         
         try:
             kwargs = self._get_subprocess_kwargs(capture_output=False)
@@ -965,7 +1052,7 @@ class ADBHelper:
                     except Exception:
                         break
             
-            threading.Thread(target=_read_log_thread, daemon=True).start()
+            self.spawn(_read_log_thread)
             return self.log_queue
             
         except Exception as e:
@@ -1107,7 +1194,7 @@ class ADBHelper:
         if not package_name:
             return False, "Package name is empty"
 
-        device_id = self.current_device_id
+        device_id = self.active_device_id
         rotation_before = self._read_accelerometer_rotation(device_id) if device_id else None
 
         cmd = ["adb", "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"]
@@ -1141,10 +1228,13 @@ class ADBHelper:
             return None
 
     def _restore_accelerometer_rotation(self, device_id, expected, package_name):
-        """启动 2s 后检查并还原 accelerometer_rotation。设备已切换则跳过。"""
+        """启动 2s 后检查并还原 device_id 上的 accelerometer_rotation。
+
+        原来会在"用户已切走"时跳过还原，那是单设备时代的保守做法；现在这条链路
+        始终定向到 device_id，用户看哪台跟该不该还原无关——切走了更要还原，否则
+        后台设备会被永久留在被改脏的状态。
+        """
         time.sleep(2)
-        if self.current_device_id != device_id:
-            return
         current = self._read_accelerometer_rotation(device_id)
         if current is None or current == expected:
             return
@@ -1153,9 +1243,11 @@ class ADBHelper:
                 [self.adb_cmd, "-s", device_id, "shell", "settings", "put", "system", "accelerometer_rotation", expected],
                 **self._get_subprocess_kwargs()
             )
-            self.log(f"已还原系统自动旋转开关 {current} → {expected}（被 {package_name} 启动时修改）", "INFO")
+            with self.bind_device(device_id):
+                self.log(f"已还原系统自动旋转开关 {current} → {expected}（被 {package_name} 启动时修改）", "INFO")
         except Exception as e:
-            self.log(f"还原自动旋转开关失败: {e}", "ERROR")
+            with self.bind_device(device_id):
+                self.log(f"还原自动旋转开关失败: {e}", "ERROR")
 
     def stop_app(self, package_name):
         """强制停止 App"""
@@ -1414,7 +1506,7 @@ class ADBHelper:
         整个流程横跨数秒，期间用户可能切换下拉框，靠 current_device_id
         隐式注入会把端口开到错误的设备上。
         """
-        device_id = device_id or self.current_device_id
+        device_id = device_id or self.active_device_id
 
         def _thread():
             self.log(f"正在为设备 {device_id} 启动无线调试流程...", "INFO")
@@ -1644,7 +1736,7 @@ class ADBHelper:
 
         # -T 1：只回看最后 1 行再继续实时流式输出，不依赖设备/主机时钟（两者可能不同步），
         # 避免用时间戳做 -T 时因设备时钟滞后于主机而把刚产生的新日志也一并过滤掉
-        cmd_logcat = [self.adb_cmd, "-s", self.current_device_id, "logcat", "-v", "time", "-T", "1", "-s", "FA", "FA-SVC"]
+        cmd_logcat = [self.adb_cmd, "-s", self.active_device_id, "logcat", "-v", "time", "-T", "1", "-s", "FA", "FA-SVC"]
         self.log(f"执行专属 Firebase Logcat 命令: {' '.join(cmd_logcat)}", "CMD")
         
         try:
@@ -1668,7 +1760,7 @@ class ADBHelper:
                     except Exception:
                         break
                         
-            threading.Thread(target=_read_thread, daemon=True).start()
+            self.spawn(_read_thread)
             return self.firebase_log_queue
             
         except Exception as e:
@@ -1788,9 +1880,10 @@ class ADBHelper:
         if self.recording_process:
             return False
 
+        device_id = self.active_device_id
         self.enable_show_touches()
 
-        cmd = [self.adb_cmd, "-s", self.current_device_id, "shell",
+        cmd = [self.adb_cmd, "-s", device_id, "shell",
                "screenrecord", "--bit-rate", str(int(bit_rate)),
                "/sdcard/screen_record_tmp.mp4"]
 
@@ -1803,6 +1896,7 @@ class ADBHelper:
                 cmd,
                 **kwargs
             )
+            self.recording_device_id = device_id
             return True
         except Exception as e:
             self.log(f"启动录制失败: {e}", "ERROR")
@@ -1813,6 +1907,9 @@ class ADBHelper:
         Stops recording, pulls file, deletes remote file.
         Calls on_complete(local_path) when done.
         """
+        # 绑回开录时的那台设备：pull 视频、rm 远端文件都必须打在它身上
+        record_device = self.recording_device_id or self.active_device_id
+
         def _thread():
             error_reason = None
             try:
@@ -1859,8 +1956,14 @@ class ADBHelper:
             except Exception as e:
                 self.log(f"停止录制失败: {e}", "ERROR")
                 if on_complete: on_complete(None, str(e))
+            finally:
+                self.recording_device_id = None
 
-        threading.Thread(target=_thread, daemon=True).start()
+        def _bound_thread():
+            with self.bind_device(record_device):
+                _thread()
+
+        threading.Thread(target=_bound_thread, daemon=True).start()
 
     # --- Screenshot ---
     
@@ -1896,5 +1999,5 @@ class ADBHelper:
                 self.log(f"截图失败: {e}", "ERROR")
                 if on_complete: on_complete(None)
 
-        threading.Thread(target=_thread, daemon=True).start()
+        self.spawn(_thread)
 
