@@ -520,7 +520,9 @@ class ToolsTab(ctk.CTkFrame):
         """
         try:
             self.adb_helper.connect_wireless(
-                addr, lambda ok, a, msg: self._on_connect_result(ok, a, msg, device_id)
+                addr,
+                lambda ok, a, msg: self._on_connect_result(ok, a, msg, device_id),
+                device_id=device_id,
             )
         except Exception as e:
             self.log(f"连接无线调试异常: {e}", "ERROR")

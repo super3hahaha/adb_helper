@@ -15,6 +15,12 @@ class NoDeviceConnectedError(Exception):
     pass
 
 
+# bind_device 的特殊取值：这条链路是"不属于任何设备"的全局操作（按地址连/断无线、
+# 批量任务）。多设备模式下没有绑定的线程会回落到 UI 当前选中设备，日志就会挂到一台
+# 无关的机器名下；绑上它表示显式声明无主，日志不加设备前缀。
+GLOBAL_TASK = "__global__"
+
+
 def _device_sh_quote(s: str) -> str:
     """把字符串包成可安全交给设备端 sh 的单引号字面量。
     adb shell 会把多个 token 用空格拼成单条命令行交给设备 sh 解析，
@@ -62,7 +68,11 @@ class ADBHelper:
         所有会拼 `-s <id>` 的地方一律读这个属性，不要直接读 current_device_id ——
         后者会随用户切换下拉框而变，长流程读它必然串台。
         """
-        return getattr(self._tls, "device_id", None) or self.current_device_id
+        bound = getattr(self._tls, "device_id", None)
+        if bound == GLOBAL_TASK:
+            # 全局链路本不该拼 -s，真拼了就按前台语义回落，别把哨兵当序列号发出去
+            return self.current_device_id
+        return bound or self.current_device_id
 
     @contextmanager
     def bind_device(self, device_id):
@@ -136,9 +146,13 @@ class ADBHelper:
         # 多设备并行时日志会交织，得标清楚是谁在说话：
         # - 线程绑了设备 = 某台设备的后台任务，一律加前缀
         # - 只连了一台时前台操作不加，避免每行都是重复噪音
-        # 全局操作（刷设备列表、无线连接）不绑定也没有 current，自然不带前缀
+        # 全局操作（按地址连/断无线等）必须绑 GLOBAL_TASK 显式声明无主，否则多设备下
+        # 会回落到当前选中设备，把"连 A 的地址失败"记成 B 说的话
         bound = getattr(self._tls, "device_id", None)
-        target = bound or (self.current_device_id if self.multi_device_mode else None)
+        if bound == GLOBAL_TASK:
+            target = None
+        else:
+            target = bound or (self.current_device_id if self.multi_device_mode else None)
         if target:
             message = f"[{self.device_label(target)}] {message}"
         if self.log_callback:
@@ -170,6 +184,8 @@ class ADBHelper:
     # 加超时保证同步调用一定会在有限时间内返回（或报超时）。
     DEVICES_TIMEOUT = 10   # adb devices：含冷启动 daemon 的余量
     SHELL_TIMEOUT = 20     # 普通 shell/命令
+    PROBE_TIMEOUT = 2      # 裸 socket 探 ip:port（见 _probe_tcp）。局域网内通得了的
+                           # 几十毫秒就返回，2s 只是给不通的情况定个上限
     PUSH_TIMEOUT = 300     # adb push：批量/文件夹传输耗时不定，尤其老设备(Android 8 及更早
                            # 缺少 Android 9+ 的 sync 协议管线化优化)，多文件逐个走同步 stat+传输，
                            # 远比单文件慢，20s 通用超时会把仍在正常传输的 push 误杀
@@ -247,6 +263,52 @@ class ADBHelper:
                 self.log("错误: 未找到 adb 命令，请检查环境变量。", "ERROR")
             except Exception as e:
                 self.log(f"启动 adb server 失败: {e}", "WARNING")
+
+    def _restart_adb_server(self):
+        """kill-server + start-server。会踢掉所有无线连接，调用方负责重连回来。
+
+        USB 设备会自己重新枚举，track-devices 监听线程也会自愈（见下面的重连退避），
+        唯独无线 entry 是 server 内存里的状态，重启即丢。
+        """
+        kwargs = self._get_subprocess_kwargs(capture_output=False, text=False, timeout=self.DEVICES_TIMEOUT)
+        kwargs['stdin'] = subprocess.DEVNULL
+        kwargs['stdout'] = subprocess.DEVNULL
+        kwargs['stderr'] = subprocess.DEVNULL
+        with self._adb_server_lock:
+            self._adb_server_ready = False
+            try:
+                subprocess.run([self.adb_cmd, "kill-server"], **kwargs)
+            except Exception as e:
+                self.log(f"kill-server 失败: {e}", "WARNING")
+                return False
+        self._ensure_adb_server(force=True)
+        return self._adb_server_ready
+
+    def _probe_tcp(self, addr, timeout=2.0):
+        """裸 socket 探一下 ip:port 通不通，绕开 adb 自己的状态。
+
+        用途见 connect_wireless 的自动重试：能连上端口却被 adb 拒绝，才能断定
+        问题出在 adb server 而不是网络/设备。
+        """
+        try:
+            host, _, port = addr.partition(":")
+            with socket.create_connection((host, int(port or 5555)), timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    def _probe_reachable(self, addr, attempts=2):
+        """探端口，探不通就隔 1s 再探一次。
+
+        重试是给「开启无线调试」流程留的余量：`adb tcpip 5555` 刚下发完，设备端
+        监听可能还没起来，一次探不到就判死会把正常流程误杀。
+        """
+        for i in range(attempts):
+            if self._probe_tcp(addr, timeout=self.PROBE_TIMEOUT):
+                return True
+            if i < attempts - 1:
+                time.sleep(1)
+        return False
 
     # ---------------- 设备插拔监听（adb host:track-devices 长连接） ----------------
     #
@@ -1608,16 +1670,72 @@ class ADBHelper:
 
         threading.Thread(target=_thread, daemon=True).start()
 
-    def connect_wireless(self, addr, on_result, async_run=True):
+    def _retry_after_server_restart(self, norm, attempt_fn, last_out):
+        """`adb connect` 失败后的自动补救：重启 adb server 再连一次。
+
+        adb server 会把连接失败的地址挂进后台重连队列，之后手动 connect 拿回的往往是
+        **上一次的错误**——手机 Wi-Fi 漫游几秒不可达，恢复后仍一直报 No route to
+        host，只有 kill-server 能解。
+
+        但 kill-server 会踢掉所有无线设备，不能见失败就重启，所以先用裸 socket 探
+        ip:port：探不通说明设备是真没在（关机/换 IP/不同网段），重启 server 只会白白
+        断掉别人的连接。探得通才断定是 server 状态残留。
+
+        返回 (是否连上, 输出)。已连的其它无线设备会在重启后逐台补回来。
+        """
+        if not self._probe_tcp(norm):
+            return False, last_out
+
+        others = [a for a in self.get_wireless_devices() if a != norm]
+        self.log(
+            f"{norm} 端口可达但 adb 拒绝连接，疑似 adb server 状态残留，正在重启 server 重试...",
+            "WARNING",
+        )
+        if others:
+            self.log(f"重启会断开已连接的 {len(others)} 台无线设备，稍后自动重连", "INFO")
+
+        if not self._restart_adb_server():
+            return False, last_out
+
+        connected, out = attempt_fn()
+
+        # 无论目标连没连上，都得把被误伤的其它设备接回来
+        for a in others:
+            self.execute_adb_command([self.adb_cmd, "connect", a], check_dev=False)
+            if a not in self.get_wireless_devices():
+                self.log(f"重连原有无线设备失败: {a}，请在「无线设备管理」里手动重连", "WARNING")
+
+        if connected:
+            self.log("重启 adb server 后连接成功（原失败是 server 缓存的旧状态）", "SUCCESS")
+        return connected, out
+
+    def connect_wireless(self, addr, on_result, async_run=True, device_id=None,
+                         allow_server_restart=True):
         """连接一台无线设备。addr 接受 "ip" 或 "ip:port"（缺省端口 5555）。
 
         回调 on_result(success, addr, message)。多台设备可以各自 IP 共用 5555，
         彼此不冲突，所以这里不做"是否已有其它无线设备"的检查，也不要求先拔 USB
         —— adb 允许同一台机器 USB 与 WiFi 两条 entry 并存。
+
+        device_id 传"这个地址属于哪台设备"（走开启无线调试流程时有），日志才能挂对
+        名字；手动输地址/批量重连这类无主操作不传，日志一律不带设备前缀。
+
+        allow_server_restart 见 _retry_after_server_restart：失败且端口探得通时，
+        自动重启 adb server 重试一次。批量连接由外层统一处理，逐台传 False。
         """
         norm = self.normalize_wireless_addr(addr)
+        owner = device_id or GLOBAL_TASK
 
-        def _work():
+        def _attempt():
+            """连一次并回查结果。返回 (是否连上, adb 的输出)。"""
+            _, out = self.execute_adb_command(
+                [self.adb_cmd, "connect", norm], check_dev=False
+            )
+            time.sleep(2)
+            # adb connect 即使失败也常返回 0，必须回查 devices 里该地址是否 device 状态
+            return norm in self.get_wireless_devices(), out
+
+        def _run():
             if not norm:
                 self.log(f"无线地址格式非法: {addr}", "ERROR")
                 if on_result:
@@ -1625,13 +1743,24 @@ class ADBHelper:
                 return
 
             self.log(f"正在尝试无线连接 {norm} ...", "INFO")
-            ok, out = self.execute_adb_command(
-                [self.adb_cmd, "connect", norm], check_dev=False
-            )
-            time.sleep(2)
 
-            # 验证：adb connect 即使失败也常返回 0，必须回查 devices 里该地址是否 device 状态
-            connected = norm in self.get_wireless_devices()
+            # 先探端口再交给 adb：连不通的地址 adb 要卡满 SHELL_TIMEOUT 才报错，
+            # 手动输错一位 IP 就得干等 20s。socket 2s 内就能判定，且它探不通时
+            # adb connect 必然也连不上（做的是同一件事），短路掉不会误杀。
+            # 只有 device_id 有值（刚走完 tcpip 的开启流程）才需要那次重探，手动输
+            # 地址/重连老地址时端口早该开着，探一次就够，不必陪等 3s
+            if not self._probe_reachable(norm, attempts=2 if device_id else 1):
+                msg = "端口不可达，请确认设备与电脑连的是同一个 Wi-Fi，或处在同一个网段"
+                self.log(f"无线调试连接失败: {norm} ({msg})", "ERROR")
+                if on_result:
+                    on_result(False, norm, msg)
+                return
+
+            connected, out = _attempt()
+
+            if not connected and allow_server_restart:
+                connected, out = self._retry_after_server_restart(norm, _attempt, out)
+
             if connected:
                 self.log(f"无线调试连接成功: {norm}", "SUCCESS")
                 if on_result:
@@ -1641,6 +1770,12 @@ class ADBHelper:
                 self.log(f"无线调试连接失败: {norm} ({msg})", "ERROR")
                 if on_result:
                     on_result(False, norm, msg)
+
+        # 绑定要落在真正执行的线程里：threading.local 不跨线程继承，
+        # 在这里 with 一下再起线程是绑不到子线程上的
+        def _work():
+            with self.bind_device(owner):
+                _run()
 
         if async_run:
             threading.Thread(target=_work, daemon=True).start()
@@ -1653,17 +1788,33 @@ class ADBHelper:
         回调 on_complete(results)，results 为 [(addr, success, message), ...]。
         """
         def _thread():
-            results = []
+            with self.bind_device(GLOBAL_TASK):
+                results = []
 
-            def _collect(success, addr, message):
-                results.append((addr, success, message))
+                def _collect(success, addr, message):
+                    results.append((addr, success, message))
 
-            for a in addrs:
-                self.connect_wireless(a, _collect, async_run=False)
-            ok_count = sum(1 for r in results if r[1])
-            self.log(f"批量无线连接完成: 成功 {ok_count}/{len(addrs)}", "SUCCESS" if ok_count else "WARNING")
-            if on_complete:
-                on_complete(results)
+                # 逐台禁掉自动重启：每台都 kill 一次 server 会把前面刚连上的全踢掉，
+                # 反复互相打断。整批做完再统一补救一次。
+                for a in addrs:
+                    self.connect_wireless(a, _collect, async_run=False, allow_server_restart=False)
+
+                failed = [r[0] for r in results if not r[1]]
+                # 只要有一台探得通却连不上，就是 server 状态脏，重启后整批重来
+                if failed and any(self._probe_tcp(a) for a in failed):
+                    self.log(
+                        f"{len(failed)} 台端口可达却连不上，重启 adb server 后重试整批...",
+                        "WARNING",
+                    )
+                    if self._restart_adb_server():
+                        results = []
+                        for a in addrs:
+                            self.connect_wireless(a, _collect, async_run=False, allow_server_restart=False)
+
+                ok_count = sum(1 for r in results if r[1])
+                self.log(f"批量无线连接完成: 成功 {ok_count}/{len(addrs)}", "SUCCESS" if ok_count else "WARNING")
+                if on_complete:
+                    on_complete(results)
 
         threading.Thread(target=_thread, daemon=True).start()
 
@@ -1674,7 +1825,7 @@ class ADBHelper:
         传 ["ip:port", ...] 则只断开指定的那几台，其它无线设备保持连接。
         回调 on_complete(count, error=None)，count 为实际断开的台数，-1 表示异常。
         """
-        def _thread():
+        def _run():
             try:
                 if targets is None:
                     self.log("正在检查已连接的无线设备...", "INFO")
@@ -1708,6 +1859,11 @@ class ADBHelper:
             except Exception as e:
                 self.log(f"断开无线设备异常: {str(e)}", "ERROR")
                 if on_complete: on_complete(-1, str(e)) # -1 indicates error
+
+        def _thread():
+            # 按地址断开，跟"当前选中的是谁"无关，日志不该挂到某台设备名下
+            with self.bind_device(GLOBAL_TASK):
+                _run()
 
         threading.Thread(target=_thread, daemon=True).start()
 

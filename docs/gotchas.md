@@ -369,6 +369,23 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 
 `log()` 的规则：线程绑了设备一律加 `[别名]` 前缀；没绑定的前台操作只在 `multi_device_mode`（由 `_apply_device_list` 按 `len(devices) > 1` 同步）时才加。单设备下每行都带前缀纯属噪音，而并行时不带就完全分不清谁在说话。
 
+### 全局操作必须绑 `GLOBAL_TASK`，"不绑定"不等于"无主"
+
+2026-08-07 实测日志：
+
+```
+[13:44:11] [pixel9 pro v16] 获取到设备 IP: 192.168.209.171
+[13:44:13] 正在尝试无线连接 192.168.209.171:5555 ...     ← 无前缀
+[13:44:13] 检测到设备接入: [USB] pixel9 pro v16
+[13:44:15] [moto g5] 无线调试连接失败: 192.168.209.171:5555   ← 张冠李戴
+```
+
+同一个工作线程里的两条日志，前缀却不一样。原因是 `log()` 对未绑定线程的回落是 `current_device_id if multi_device_mode`，而**这两个变量都会在流程中途被设备插拔改掉**：13:44:13 第二台设备接入，`multi_device_mode` 由 False 翻成 True，回落条件突然成立，于是后半程的日志被扣到了下拉框里选中的 moto g5 头上——那台跟这条链路毫无关系。
+
+所以"全局操作不绑定也没有 current，自然不带前缀"这个旧假设是错的：**不绑定 = 把归属权交给两个随时会变的全局变量**。按地址连/断无线、批量重连这类无主链路要显式 `with self.bind_device(GLOBAL_TASK)`（`adb_helper.py` 模块级常量），`log()` 见到它直接不加前缀；`active_device_id` 则回落 `current_device_id`，别把哨兵当序列号拼进 `-s`。
+
+`connect_wireless(addr, on_result, device_id=...)` 的 `device_id` 就是这条链路的主人：走「开启无线调试」时由 `tools_tab` 把发起设备传进来（日志显示 `[pixel9 pro v16]`），手动输 IP / 无线管理窗口批量重连不传，一律无前缀。注意绑定要落在**真正执行的那个线程内部**，`threading.local` 不跨线程继承。
+
 ### 已知不做的部分
 
 **按钮禁用仍是全局的**（`btn_screen_info` / 刷新 APK / Firebase 等）：设备1查询期间设备2也点不了那个按钮。不影响并行的正确性，只是体验别扭，实测撞上概率低——安装按钮本来就不禁用，主路径不受影响。同理没做"后台有 N 个任务"的状态栏，日志会持续输出，够用。
@@ -410,6 +427,40 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 - 构造期那次刻意传 `devices=[]`：否则窗口首屏要同步等 `adb devices` + N 次 getprop。启动后主窗口的刷新会立刻推真实数据覆盖。
 - `action_add_device_alias` 预填当前设备时会先 `_canonical_device_id()`，否则用户在无线连接下一路确定，别名就存到了随 DHCP 失效的 `ip:port` key 上。
 - key 本身是 `ip:port` 的别名记录（历史遗留或手工误设）单独橙色标注"旧无线地址，换 IP 后会失效"——直查优先意味着它**确实会生效**，不标出来用户不知道该清掉它。
+
+### `adb connect` 会缓存失败，网络恢复了也一直报 No route to host
+
+adb server 对连接失败的地址会挂进后台重连队列，之后手动 `adb connect` 拿回的往往是**上一次的错误**，而不是重新发起的结果。表现是网络明明已经好了仍持续失败：
+
+```
+$ adb connect 192.168.209.171:5555
+failed to connect to '192.168.209.171:5555': No route to host
+$ ping 192.168.209.171          # 通
+$ nc -z 192.168.209.171 5555    # 端口开着
+$ adb kill-server && adb connect 192.168.209.171:5555
+connected to 192.168.209.171:5555      # 立刻就好了
+```
+
+2026-08-07 实际成因是手机在 `11wifi2.4g` → `11wifi` 之间漫游（`dumpsys wifi` 的 `NETWORK_DISCONNECTION_EVENT` 有记录），那几秒确实不可达，但 adb 把这个状态记住了。排查顺序固定为 **ping → nc 测 5555 → kill-server 重试**：能 ping 通且端口开着还连不上，就是 server 状态脏，跟网段、防火墙都无关。
+
+另注意排查时别把 IP 当成设备身份：`adb -s <serial> shell ip -f inet addr show wlan0` 才是当前真 IP，配置里存的无线地址可能是几天前的旧值，也可能被 DHCP 分给了另一台设备。
+
+### 自动 kill-server 重试的前提：先探端口，别见失败就重启
+
+上面那条已在 `connect_wireless` 里自动化（`_retry_after_server_restart`），但**不能失败就 kill**——`kill-server` 会清掉 server 内存里所有无线 entry（实测重启后 `get_wireless_devices()` 直接变空，USB 设备则自己重新枚举），为了连一台把用户其它几台全踢掉是净亏。
+
+所以门槛是裸 socket 探 `ip:port`（`_probe_tcp`，绕开 adb 自己的状态）：
+
+- 探不通 → 设备真没在（关机 / 换 IP / 不在同网段），直接报失败，一台都不动
+- 探得通却连不上 → 断定是 server 状态残留，才重启，重启后再把原先连着的其它地址逐台补回来（补不回的明确提示去「无线设备管理」手动重连）
+
+批量连接（`connect_wireless_devices`）逐台传 `allow_server_restart=False`：每台各 kill 一次会把前面刚连上的反复踢掉，改成整批做完后，只要有失败项探得通就重启一次、整批重来。
+
+同一个探测还兼做**失败快速返回**：`adb connect` 一个连不通的地址要卡满 `SHELL_TIMEOUT`(20s) 才报错，手动输错一位 IP 就得干等。改成 connect 之前先探（`_probe_reachable`），探不通直接返回"端口不可达"并给出排查方向。短路是安全的——socket 探不通时 adb connect 做的是同一件事，必然也连不上。
+
+`attempts` 按场景分：`device_id` 有值 = 刚走完 `adb tcpip 5555` 的开启流程，设备端监听可能还没起来，探不到要隔 1s 再探一次；手动输地址/重连老地址端口早该开着，探一次就够。实测耗时受 ARP 影响很大——同网段的不存在 IP，首次探测要等 ARP 超时（~2s），之后内核有负缓存就立刻 EHOSTUNREACH（<0.1s），所以最坏 ~5s、常见 0～2s，都远好于原来固定 20s。
+
+副作用：`kill-server` 会掐断 `host:track-devices` 的长连接，插拔监听靠自身的重连退避自愈（见下面那条），不用额外处理。
 
 ### 无线设备管理窗口用 ctk 而非 PySide6
 
