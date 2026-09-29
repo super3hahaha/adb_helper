@@ -51,6 +51,11 @@ class ADBHelper:
         # adb server 是否已确认在运行（见 _ensure_adb_server）
         self._adb_server_ready = False
         self._adb_server_lock = threading.Lock()
+        # 设备级串行操作队列：device_id -> queue.Queue。安装/卸载等命令必须按用户
+        # 点击顺序逐条执行（上一条跑完才跑下一条），不能像其它命令一样各开线程乱序跑，
+        # 否则"卸载还没完成就点了安装"会把两条命令同时打到设备上。见 _get_device_op_queue。
+        self._device_op_queues = {}
+        self._device_op_queues_lock = threading.Lock()
         # 设备插拔监听（见 start_device_watch）
         self._watch_thread = None
         self._watch_stop_event = threading.Event()
@@ -160,6 +165,67 @@ class ADBHelper:
         else:
             print(f"[{level}] {message}")
 
+    def _get_device_op_queue(self, device_id):
+        """惰性创建 device_id 的串行任务队列 + 常驻 worker 线程（只建一次，进程生命周期内一直存在）。
+
+        worker 单线程 FIFO 取任务执行，天然保证：同一设备的任务严格按 enqueue 顺序跑，
+        上一条完全跑完（成功/失败都算完成）才会开始下一条；不同设备各自的队列/线程互不阻塞，
+        不影响多设备并行。"""
+        with self._device_op_queues_lock:
+            q = self._device_op_queues.get(device_id)
+            if q is None:
+                q = queue.Queue()
+                self._device_op_queues[device_id] = q
+                threading.Thread(target=self._device_op_worker, args=(device_id, q), daemon=True).start()
+            return q
+
+    def _device_op_worker(self, device_id, q):
+        while True:
+            task = q.get()
+            with self.bind_device(device_id):
+                try:
+                    task()
+                except Exception as e:
+                    self.log(f"设备操作队列任务异常: {e}", "ERROR")
+
+    def run_adb_queued(self, cmd_list, on_complete=None, check_dev=True, timeout=None):
+        """把命令排进当前目标设备的串行队列（异步，不等待，用法同 run_adb_async）。
+
+        安装/卸载等互斥操作走这里而不是 run_adb_async：后者每次都新开一条独立线程，
+        无法保证"卸载命令还没跑完，安装命令就已经发出去"这种顺序问题。"""
+        device_id = self.active_device_id
+
+        def _task():
+            try:
+                success, _ = self.execute_adb_command(cmd_list, check_dev=check_dev, timeout=timeout)
+            except NoDeviceConnectedError:
+                success = False
+            if on_complete:
+                try:
+                    on_complete(success)
+                except TypeError:
+                    on_complete()
+
+        self._get_device_op_queue(device_id).put(_task)
+
+    def run_adb_queued_sync(self, cmd_list, check_dev=True, timeout=None):
+        """把命令排进当前目标设备的串行队列，阻塞等待轮到它执行完并返回结果。
+
+        调用方必须已经在后台线程里（例如经 spawn 起的线程），不能在 UI 主线程调用，
+        否则会一直卡到前面排队的命令跑完才返回，界面会被卡死。"""
+        device_id = self.active_device_id
+        result_holder = queue.Queue(maxsize=1)
+
+        def _task():
+            try:
+                result = self.execute_adb_command(cmd_list, check_dev=check_dev, timeout=timeout)
+            except NoDeviceConnectedError as e:
+                result = (False, str(e))
+            result_holder.put(result)
+
+        self._get_device_op_queue(device_id).put(_task)
+        return result_holder.get()
+
     def run_adb_async(self, cmd_list, on_complete=None, check_dev=True, timeout=None):
         """启动新线程执行 ADB 命令。调用线程的设备绑定会带进新线程。"""
         bound = getattr(self._tls, "device_id", None) or self.current_device_id
@@ -191,6 +257,8 @@ class ADBHelper:
                            # 远比单文件慢，20s 通用超时会把仍在正常传输的 push 误杀
     INSTALL_TIMEOUT = 300  # adb install：apk 装到设备后要做 dex/ART 优化编译，
                            # 性能较差/存储较慢的设备上这一步可能远超 20s，同样不能用通用超时
+    PULL_TIMEOUT = 1800    # adb pull：导出的单个文件可能有几个 GB（实测 12GB 压缩包），
+                           # USB 实际吞吐常只有一二十 MB/s，正常传输就能轻松超过 20s 通用超时
 
     # 部分老 / 定制 ROM 设备（实测华为 P9 EVA-AL10 / EMUI Android 8.0）USB 连接会在传输中途
     # 短暂掉线又自动恢复（实测 adb devices 15s 内重新出现），推大文件夹时 adb push 会报
@@ -958,6 +1026,11 @@ class ADBHelper:
         self.check_device()
         return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.LOCALE_SETTINGS"])
 
+    def open_navigation_settings(self):
+        """唤起系统导航方式选择页（由设备设置应用处理）。"""
+        self.check_device()
+        return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "com.android.settings.NAVIGATION_MODE_SETTINGS"])
+
     ADB_KB_PKG = "com.android.adbkeyboard"
     ADB_KB_IME = f"{ADB_KB_PKG}/.AdbIME"
 
@@ -1140,13 +1213,13 @@ class ADBHelper:
         self.run_adb_async(["adb", "shell", "svc", "wifi", "enable"])
 
     def uninstall_app(self, pkg):
-        self.run_adb_async(["adb", "uninstall", pkg])
+        self.run_adb_queued(["adb", "uninstall", pkg])
 
     def clear_data(self, pkg, on_complete=None):
         self.run_adb_async(["adb", "shell", "pm", "clear", pkg], on_complete)
 
     def install_apk(self, apk_path, on_complete=None):
-        self.run_adb_async(["adb", "install", "-r", apk_path], on_complete, timeout=self.INSTALL_TIMEOUT)
+        self.run_adb_queued(["adb", "install", "-r", apk_path], on_complete, timeout=self.INSTALL_TIMEOUT)
 
     def push_files(self, local_paths: list, remote_path: str):
         """推送多个文件或文件夹到设备"""
@@ -1318,20 +1391,170 @@ class ADBHelper:
         return self.execute_adb_command(["adb", "shell", "am", "force-stop", package_name])
 
     def install_apk_sync(self, apk_path):
-        """同步安装 APK 并返回结果，供拖拽安装使用"""
-        return self.execute_adb_command(["adb", "install", "-r", apk_path], timeout=self.INSTALL_TIMEOUT)
+        """同步安装 APK 并返回结果，供拖拽安装使用。排入设备队列，
+        与按钮触发的安装/卸载严格按提交顺序执行，不会互相插队。"""
+        return self.run_adb_queued_sync(["adb", "install", "-r", apk_path], timeout=self.INSTALL_TIMEOUT)
 
     def clear_google_play_data(self):
         """清除 Google Play 商店数据"""
         return self.execute_adb_command(["adb", "shell", "pm", "clear", "com.android.vending"])
 
-    def enable_gesture_nav(self):
-        """切换为全面屏手势导航"""
-        return self.execute_adb_command(["adb", "shell", "cmd", "overlay", "enable", "com.android.internal.systemui.navbar.gestural"])
+    # --- 屏幕尺寸 / 密度覆写（wm size / wm density）---
+    # 用途：手头没有大屏设备时，把手机伪装成 840dp / 1000dp 宽的窗口，验证布局分档。
+    # 注意 App 判档看的是 dp 宽，而 wm size 改的是 px，换算关系 dp = px * 160 / density。
 
-    def enable_threebutton_nav(self):
-        """切换为三键导航"""
-        return self.execute_adb_command(["adb", "shell", "cmd", "overlay", "enable", "com.android.internal.systemui.navbar.threebutton"])
+    def _invalidate_screen_cache(self):
+        """清掉当前设备的 screen_info 缓存。
+
+        缓存键是 Configuration 的 w/h dp 串，改完 size/density 后 dp 变了、键也会变，
+        理论上不会误命中；但"改过去再改回来"会精准撞回旧槽，所以覆写后一律清干净。
+        """
+        try:
+            from core import screen_info_cache
+            screen_info_cache.clear(self.active_device_id)
+        except Exception:
+            pass
+
+    def get_size_density_state(self):
+        """轻量读取当前 size / density 的物理值与覆写值，供屏幕调整面板刷新状态。
+
+        不走 get_screen_info —— 那个要 dumpsys window（几百 KB）解 insets/cutout，太重。
+        这里只发 3 条小命令，总耗时 ~150ms，够面板高频刷新。
+
+        dp_w / dp_h 直接取 `am get-config` 的 w###dp-h###dp：那是 Android 报给 App 的
+        当前方向逻辑尺寸，也正是布局分档真正依据的值，比自己拿 px 除 density 更权威
+        （后者是自然方向的，横屏时宽高还得手动互换）。
+        """
+        self.check_device()
+
+        state = {
+            "phys_w": 0, "phys_h": 0, "over_w": 0, "over_h": 0,
+            "phys_density": 0, "over_density": 0,
+            "dp_w": 0, "dp_h": 0,
+        }
+
+        size_out = self._shell_silent(["shell", "wm", "size"])
+        m = re.search(r"Physical size:\s*(\d+)x(\d+)", size_out)
+        if m:
+            state["phys_w"], state["phys_h"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"Override size:\s*(\d+)x(\d+)", size_out)
+        if m:
+            state["over_w"], state["over_h"] = int(m.group(1)), int(m.group(2))
+
+        dens_out = self._shell_silent(["shell", "wm", "density"])
+        m = re.search(r"Physical density:\s*(\d+)", dens_out)
+        if m:
+            state["phys_density"] = int(m.group(1))
+        m = re.search(r"Override density:\s*(\d+)", dens_out)
+        if m:
+            state["over_density"] = int(m.group(1))
+
+        conf_out = self._shell_silent(["shell", "am", "get-config"])
+        m = re.search(r"w(\d+)dp-h(\d+)dp", conf_out)
+        if m:
+            state["dp_w"], state["dp_h"] = int(m.group(1)), int(m.group(2))
+
+        # 当前生效值：有 Override 取 Override，否则取 Physical
+        state["cur_w"] = state["over_w"] or state["phys_w"]
+        state["cur_h"] = state["over_h"] or state["phys_h"]
+        state["cur_density"] = state["over_density"] or state["phys_density"]
+        return state
+
+    def get_foreground_window_state(self):
+        """读前台 Activity 自己的 Configuration —— 也就是 App 真正拿到的窗口尺寸。
+
+        为什么不能用 `am get-config`：那是**设备级**全局 Configuration。App 被拖成
+        自由窗口或进分屏时它纹丝不动，而布局判档看的恰恰是 App 自身窗口宽，
+        两者在多窗口下会差出好几档。
+
+        取法：`dumpsys activity activities` 里找 topResumedActivity，再取它**之后**的
+        第一个 `CurrentConfiguration` —— 那是这个 Activity 实际生效的配置，
+        freeform / 分屏下已经被 task bounds 改写成窗口自身的值。
+
+        不在设备端 grep 裁剪：不同 Activity 的段落长度不一，`grep -A<n>` 的行数窗口
+        时而框不到 CurrentConfiguration（实测 -A25 就会漏）。全量约 50KB / ~150ms，
+        本地正则定位反而稳。
+
+        返回 dict，读不到（无前台 Activity、格式不认识）返回 None。
+        """
+        self.check_device()
+        out = self._shell_silent(["shell", "dumpsys", "activity", "activities"])
+        if not out:
+            return None
+
+        m = re.search(r"topResumedActivity=ActivityRecord\{\S+ \S+ (\S+) t(\d+)", out)
+        if not m:
+            return None
+        comp, task_id = m.group(1), m.group(2)
+
+        c = re.search(r"CurrentConfiguration=\{([^\n]*)", out[m.end():])
+        if not c:
+            return None
+        body = c.group(1)
+
+        dp = re.search(r"sw(\d+)dp w(\d+)dp h(\d+)dp (\d+)dpi", body)
+        if not dp:
+            return None
+
+        info = {
+            "package": comp.split("/")[0],
+            "component": comp,
+            "task_id": task_id,
+            "sw_dp": int(dp.group(1)),
+            "w_dp": int(dp.group(2)),
+            "h_dp": int(dp.group(3)),
+            "dpi": int(dp.group(4)),
+            "mode": "?",
+            "px_w": 0, "px_h": 0,
+            "app_px_w": 0, "app_px_h": 0,
+        }
+
+        md = re.search(r"mWindowingMode=(\S+)", body)
+        if md:
+            info["mode"] = md.group(1)
+        # mBounds = 窗口整体像素矩形；mAppBounds = 扣掉系统栏后 App 可绘制区
+        bd = re.search(r"mBounds=Rect\((-?\d+), (-?\d+) - (-?\d+), (-?\d+)\)", body)
+        if bd:
+            l, t, r_, b = map(int, bd.groups())
+            info["px_w"], info["px_h"] = r_ - l, b - t
+        ab = re.search(r"mAppBounds=Rect\((-?\d+), (-?\d+) - (-?\d+), (-?\d+)\)", body)
+        if ab:
+            l, t, r_, b = map(int, ab.groups())
+            info["app_px_w"], info["app_px_h"] = r_ - l, b - t
+        return info
+
+    def set_screen_size(self, width, height):
+        """覆写分辨率：adb shell wm size <W>x<H>。"""
+        self.check_device()
+        ok, out = self.execute_adb_command(
+            ["adb", "shell", "wm", "size", f"{int(width)}x{int(height)}"]
+        )
+        if ok:
+            self._invalidate_screen_cache()
+        return ok, out
+
+    def set_screen_density(self, density):
+        """覆写像素密度：adb shell wm density <dpi>。"""
+        self.check_device()
+        ok, out = self.execute_adb_command(
+            ["adb", "shell", "wm", "density", str(int(density))]
+        )
+        if ok:
+            self._invalidate_screen_cache()
+        return ok, out
+
+    def reset_screen_override(self):
+        """把 size 和 density 一并恢复设备出厂值。
+
+        两条命令都发，不因前一条失败而短路 —— 只覆写过 density 时 `wm size reset`
+        在部分 ROM 上会返回非 0，但 density 那条仍然必须执行，否则设备留在小字状态。
+        """
+        self.check_device()
+        ok_s, out_s = self.execute_adb_command(["adb", "shell", "wm", "size", "reset"])
+        ok_d, out_d = self.execute_adb_command(["adb", "shell", "wm", "density", "reset"])
+        self._invalidate_screen_cache()
+        msg = "\n".join(x for x in (out_s, out_d) if x)
+        return (ok_s and ok_d), msg
 
     # --- File Manager Logic ---
 
@@ -1386,7 +1609,7 @@ class ADBHelper:
 
         for remote_path in remote_paths:
             cmd = ["adb", "pull", remote_path, local_dir]
-            success, msg = self.execute_adb_command(cmd)
+            success, msg = self.execute_adb_command(cmd, timeout=self.PULL_TIMEOUT)
             if success:
                 success_count += 1
             else:
@@ -2100,7 +2323,7 @@ class ADBHelper:
                 local_filename = f"screenrecord_{int(time.time())}{device_suffix}.mp4"
                 local_path = os.path.join(temp_dir, local_filename)
 
-                pull_ok, _ = self.execute_adb_command(["adb", "pull", remote_path, local_path])
+                pull_ok, _ = self.execute_adb_command(["adb", "pull", remote_path, local_path], timeout=self.PULL_TIMEOUT)
                 self.execute_adb_command(["adb", "shell", "rm", remote_path])
 
                 if not pull_ok and proc_output and not error_reason:
@@ -2156,4 +2379,3 @@ class ADBHelper:
                 if on_complete: on_complete(None)
 
         self.spawn(_thread)
-

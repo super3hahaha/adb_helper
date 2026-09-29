@@ -2,6 +2,8 @@ import customtkinter as ctk
 import tkinter.messagebox as messagebox
 import threading
 import subprocess
+import time
+import math
 from ui.utils import optimize_combobox_width, attach_scrollable
 from ui.components.tooltip import ModernTooltip
 from core.throttle_proxy import ThrottleProxy
@@ -36,7 +38,7 @@ class ToolsTab(ctk.CTkFrame):
         self.category_var = ctk.StringVar(value="设备与系统控制")
         self.category_selector = ctk.CTkOptionMenu(
             container,
-            values=["设备与系统控制", "环境与状态模拟"],
+            values=["设备与系统控制", "环境与状态模拟", "屏幕与显示"],
             command=self.on_category_change,
             variable=self.category_var,
             corner_radius=8,
@@ -47,13 +49,20 @@ class ToolsTab(ctk.CTkFrame):
         # 优化下拉框宽度
         optimize_combobox_width(self.category_selector, offset=200)
 
-        # 创建两个容器用于切换显示
+        # 每个分类一个容器，切换时 pack / pack_forget
         self.container_system = ctk.CTkFrame(container, fg_color="transparent")
         self.container_simulation = ctk.CTkFrame(container, fg_color="transparent")
+        self.container_display = ctk.CTkFrame(container, fg_color="transparent")
+        self._category_containers = {
+            "设备与系统控制": self.container_system,
+            "环境与状态模拟": self.container_simulation,
+            "屏幕与显示": self.container_display,
+        }
 
         # 初始化各部分 UI
         self._init_system_ui()
         self._init_simulation_ui()
+        self._init_display_ui()
 
         # 初始化显示状态
         self.on_category_change(self.category_var.get())
@@ -165,24 +174,15 @@ class ToolsTab(ctk.CTkFrame):
 
         ctk.CTkLabel(frame_sys, text="系统工具", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 1), anchor="w", padx=8)
 
+        # 注：「屏幕信息」已迁到「屏幕与显示」分类，与分辨率调整放在一起
         frame_sys_query_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
         frame_sys_query_btns.pack(pady=1, padx=8, fill="x")
-        frame_sys_query_btns.grid_columnconfigure(0, weight=1, uniform="sys_query")
-        frame_sys_query_btns.grid_columnconfigure(1, weight=1, uniform="sys_query")
+        frame_sys_query_btns.grid_columnconfigure(0, weight=1, uniform="sys")
+        frame_sys_query_btns.grid_columnconfigure(1, weight=1, uniform="sys")
         ctk.CTkButton(frame_sys_query_btns, text="查询设备系统版本", height=sys_btn_h,
                       command=self.action_query_device_info).grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        self.btn_screen_info = ctk.CTkButton(frame_sys_query_btns, text="屏幕信息", height=sys_btn_h,
-                                              command=self.action_show_screen_info)
-        self.btn_screen_info.grid(row=0, column=1, sticky="ew", padx=(2, 0))
-
-        frame_nav_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
-        frame_nav_btns.pack(pady=(1, 1), padx=8, fill="x")
-        frame_nav_btns.grid_columnconfigure(0, weight=1, uniform="nav")
-        frame_nav_btns.grid_columnconfigure(1, weight=1, uniform="nav")
-        ctk.CTkButton(frame_nav_btns, text="切换全面屏手势", height=sys_btn_h,
-                      command=self.action_enable_gesture_nav).grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        ctk.CTkButton(frame_nav_btns, text="切换为三键导航", height=sys_btn_h,
-                      command=self.action_enable_threebutton_nav).grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        ctk.CTkButton(frame_sys_query_btns, text="切换系统导航方式", height=sys_btn_h,
+                      command=self.action_open_navigation_settings).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         frame_lang_btns = ctk.CTkFrame(frame_sys, fg_color="transparent")
         frame_lang_btns.pack(pady=(1, 4), padx=8, fill="x")
@@ -289,6 +289,534 @@ class ToolsTab(ctk.CTkFrame):
         self.btn_contact_ringtone = ctk.CTkButton(row_ring2, text="试听联系人铃声", height=sim_btn_h, command=self.action_contact_ringtone)
         self.btn_contact_ringtone.pack(side="right", expand=True, fill="x", padx=(2, 0))
 
+    # ===== 屏幕与显示 =====
+    # 档位定义 (名称, 下界dp, 上界dp 或 None, 一键预设的目标 dp 宽)。
+    # 区间照抄适配规则；目标值取区间中段，离边界远一点，免得设备上下取整后擦边掉档。
+    DP_TIERS = [
+        ("Compact", 0, 600, 411),
+        ("Medium", 600, 840, 700),
+        ("Expanded", 840, 1000, 900),
+        ("Large", 1000, None, 1100),
+    ]
+
+    # wm density 的安全区间。低于 ~72 部分 ROM 会渲染异常甚至重启 SystemUI，
+    # 高于 1000 没有实际意义（dp 宽会小到没有页面能用）。
+    DENSITY_MIN = 72
+    DENSITY_MAX = 1000
+
+    @classmethod
+    def _tier_of(cls, dp_w):
+        """把 dp 宽度归入档位，返回形如 "Expanded (840–999dp)" 的展示串。"""
+        for name, lo, hi, _ in cls.DP_TIERS:
+            if dp_w >= lo and (hi is None or dp_w < hi):
+                if hi is None:
+                    return f"{name} (≥{lo}dp)"
+                if lo == 0:
+                    return f"{name} (<{hi}dp)"
+                return f"{name} ({lo}–{hi - 1}dp)"
+        return "未知"
+
+    def _init_display_ui(self):
+        disp_btn_h = 28
+        # 档位名 -> 按钮，用于把设备当前所处的那一档高亮出来
+        self._tier_buttons = {}
+
+        # 1. 当前状态
+        frame_state = ctk.CTkFrame(self.container_display)
+        frame_state.pack(pady=3, padx=10, fill="x")
+
+        state_header = ctk.CTkFrame(frame_state, fg_color="transparent")
+        state_header.pack(pady=(4, 1), padx=8, fill="x")
+        ctk.CTkLabel(state_header, text="当前屏幕状态", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.state_help_btn = ctk.CTkButton(state_header, text="?", width=22, height=22, corner_radius=11,
+                                            fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.state_help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.state_help_btn, sections=[
+            ("「当前生效等效 dp」是设备级的",
+             "来自 am get-config，反映整块屏幕的 Configuration。\n"
+             "App 被拖成自由窗口或进分屏时，这个值纹丝不动。"),
+            ("「前台窗口」才是 App 判档依据",
+             "来自前台 Activity 自己的 CurrentConfiguration，小窗/分屏下就是窗口自身尺寸。\n"
+             "所以下面的「档位」按前台窗口宽判定 —— 这和适配规则第 1 条一致：\n"
+             "分屏、自由窗口按 App 自身窗口宽判档，不看设备型号与屏幕物理尺寸。\n"
+             "全屏时两者相同；读不到前台窗口（如停在桌面）才回退用设备级的值判档。"),
+            ("要测小窗尺寸怎么操作",
+             "把 App 拖成自由窗口或拉进分屏，摆到想测的大小，再点「刷新」。\n"
+             "窗口每次拖动改变大小后都要重新点一次，面板不会自动跟踪。"),
+        ])
+        self.btn_display_refresh = ctk.CTkButton(
+            state_header, text="刷新", width=48, height=22,
+            fg_color="transparent", text_color="#3B8ED0",
+            hover_color=("gray85", "gray25"),
+            command=self.refresh_display_state,
+        )
+        self.btn_display_refresh.pack(side="right")
+
+        # 这五行只压行高不改内容：CTkLabel 默认 height=28，叠五行留白过多，
+        # 压到 21 视觉上贴紧一档，又不像更小的值那样显得挤。
+        lbl_h = 21
+        self.lbl_disp_size = ctk.CTkLabel(frame_state, text="分辨率：—", font=ctk.CTkFont(size=11), height=lbl_h, anchor="w")
+        self.lbl_disp_size.pack(pady=0, padx=8, fill="x")
+        self.lbl_disp_density = ctk.CTkLabel(frame_state, text="密度：—", font=ctk.CTkFont(size=11), height=lbl_h, anchor="w")
+        self.lbl_disp_density.pack(pady=0, padx=8, fill="x")
+        self.lbl_disp_factory = ctk.CTkLabel(frame_state, text="出厂默认等效 dp：—", font=ctk.CTkFont(size=11), text_color="gray", height=lbl_h, anchor="w")
+        self.lbl_disp_factory.pack(pady=0, padx=8, fill="x")
+        # 这两行是重点：App 判档只看当前生效的窗口 dp 宽，所以加粗。
+        # 档位必须独占一行 —— 并进上面那行后，左栏窄一点就会把档位名截掉。
+        self.lbl_disp_dp = ctk.CTkLabel(frame_state, text="当前生效等效 dp：—", font=ctk.CTkFont(size=12, weight="bold"), height=lbl_h, anchor="w")
+        self.lbl_disp_dp.pack(pady=(1, 0), padx=8, fill="x")
+        # 前台窗口才是 App 判档真正依据的宽度：小窗 / 分屏下它和上面那行会差好几档。
+        # 包名单独一行 —— 挤在尺寸后面会把自己截掉，而且它是这行里最不重要的信息。
+        self.lbl_disp_window = ctk.CTkLabel(frame_state, text="前台窗口：—", font=ctk.CTkFont(size=11), height=lbl_h, anchor="w")
+        self.lbl_disp_window.pack(pady=0, padx=8, fill="x")
+        self.lbl_disp_window_pkg = ctk.CTkLabel(frame_state, text="", font=ctk.CTkFont(size=10), text_color="gray", height=14, anchor="w")
+        self.lbl_disp_window_pkg.pack(pady=0, padx=(16, 8), fill="x")
+        self.lbl_disp_tier = ctk.CTkLabel(frame_state, text="档位：—", font=ctk.CTkFont(size=12, weight="bold"), height=lbl_h, anchor="w")
+        self.lbl_disp_tier.pack(pady=(0, 2), padx=8, fill="x")
+
+        state_btns = ctk.CTkFrame(frame_state, fg_color="transparent")
+        state_btns.pack(pady=(1, 4), padx=8, fill="x")
+        state_btns.grid_columnconfigure(0, weight=1, uniform="disp_state")
+        state_btns.grid_columnconfigure(1, weight=1, uniform="disp_state")
+        self.btn_screen_info = ctk.CTkButton(state_btns, text="屏幕信息", height=disp_btn_h,
+                                             command=self.action_show_screen_info)
+        self.btn_screen_info.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ctk.CTkButton(state_btns, text="恢复设备默认", height=disp_btn_h,
+                      fg_color="#c42b1c", hover_color="#8a1f15",
+                      command=self.action_reset_screen_override).grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        ctk.CTkLabel(frame_state, text="恢复 = wm size reset + wm density reset，分辨率与密度一并回出厂值",
+                     font=ctk.CTkFont(size=10), text_color="gray", anchor="w").pack(pady=(0, 4), padx=8, fill="x")
+
+        # 2. dp 档位一键切
+        frame_tier = ctk.CTkFrame(self.container_display)
+        frame_tier.pack(pady=3, padx=10, fill="x")
+
+        tier_header = ctk.CTkFrame(frame_tier, fg_color="transparent")
+        tier_header.pack(pady=(4, 1), padx=8, fill="x")
+        ctk.CTkLabel(tier_header, text="按 dp 宽度模拟档位", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.tier_help_btn = ctk.CTkButton(tier_header, text="?", width=22, height=22, corner_radius=11,
+                                           fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.tier_help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.tier_help_btn, sections=[
+            ("判档看的是 dp 宽，不是像素",
+             "dp = px × 160 ÷ density。想把窗口 dp 宽推到目标档位，改 px 或改 density 都行，\n"
+             "下面的「调整方式」就是在这两条路之间选。两种方式都不会动另一个量。"),
+            ("改分辨率 (wm size)：默认，最贴近真实大屏",
+             "density 不动，把 wm size 的宽高同时乘以 目标dp ÷ 当前dp。\n"
+             "宽高比不变所以画面不变形；因为 dp 与 px 成正比，横屏竖屏下算出来都准。\n"
+             "效果是屏幕里装下更多内容、元素物理大小基本不变，和真实平板观感一致，\n"
+             "drawable-xxhdpi 这类资源目录的选择也不受影响。\n"
+             "代价：渲染像素数按 k² 增长，推到 1000dp 可能明显掉帧，个别 ROM 会花屏。"),
+            ("改密度 (wm density)：备选，胜在不掉帧",
+             "px 不动，只把 density 调低：新 density = 当前 density × 当前dp ÷ 目标dp。\n"
+             "surface 尺寸不变，所以截图尺寸、渲染性能、相机预览都不受影响。\n"
+             "代价：屏幕上所有元素会明显变小，而且 density 变了会改变资源目录选择，\n"
+             "排查切图资源问题时别用这个方式。"),
+            ("横屏下点会按横屏宽算",
+             "目标 dp 宽对的是「当前方向的窗口宽」。横屏时窗口宽是长边，\n"
+             "此时切到 1000dp，转回竖屏后竖屏宽会远小于 1000dp。\n"
+             "要验证竖屏大屏布局，请在竖屏状态下点档位按钮。"),
+        ])
+
+        # 调整方式：默认改分辨率——用户要的就是 wm size，改密度只作备选
+        self.dp_mode_var = ctk.StringVar(value="改分辨率")
+        self.seg_dp_mode = ctk.CTkSegmentedButton(
+            frame_tier, values=["改分辨率", "改密度"], variable=self.dp_mode_var, height=26,
+            font=ctk.CTkFont(size=11),
+        )
+        self.seg_dp_mode.pack(pady=(2, 3), padx=8, fill="x")
+
+        tier_grid = ctk.CTkFrame(frame_tier, fg_color="transparent")
+        tier_grid.pack(pady=1, padx=8, fill="x")
+        tier_grid.grid_columnconfigure(0, weight=1, uniform="tier")
+        tier_grid.grid_columnconfigure(1, weight=1, uniform="tier")
+        for idx, (name, lo, hi, target) in enumerate(self.DP_TIERS):
+            if hi is None:
+                rng = f"≥{lo}dp"
+            elif lo == 0:
+                rng = f"<{hi}dp"
+            else:
+                rng = f"{lo}–{hi - 1}dp"
+            r, c = divmod(idx, 2)
+            btn = ctk.CTkButton(
+                tier_grid, text=f"{name}  {rng}\n→ {target}dp", height=40,
+                font=ctk.CTkFont(size=11),
+                command=lambda t=target, n=name: self.action_apply_target_dp(t, n),
+            )
+            btn.grid(row=r, column=c, sticky="ew", padx=(0, 2) if c == 0 else (2, 0), pady=1)
+            self._tier_buttons[name] = btn
+
+        # 自定义 dp：验证 839 / 840 这类边界值时用
+        custom_row = ctk.CTkFrame(frame_tier, fg_color="transparent")
+        custom_row.pack(pady=(3, 4), padx=8, fill="x")
+        ctk.CTkLabel(custom_row, text="自定义 dp 宽:", font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 5))
+        self.entry_target_dp = ctk.CTkEntry(custom_row, height=disp_btn_h, placeholder_text="例如 840")
+        self.entry_target_dp.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ctk.CTkButton(custom_row, text="应用", width=56, height=disp_btn_h,
+                      command=self.action_apply_custom_dp).pack(side="right")
+
+        # 3. 手动覆写
+        frame_manual = ctk.CTkFrame(self.container_display)
+        frame_manual.pack(pady=3, padx=10, fill="x")
+
+        manual_header = ctk.CTkFrame(frame_manual, fg_color="transparent")
+        manual_header.pack(pady=(4, 0), padx=8, fill="x")
+        ctk.CTkLabel(manual_header, text="手动覆写", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.manual_help_btn = ctk.CTkButton(manual_header, text="?", width=22, height=22, corner_radius=11,
+                                             fg_color="gray50", hover_color="gray40", command=lambda: None)
+        self.manual_help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.manual_help_btn, sections=[
+            ("分辨率 (adb shell wm size)",
+             "直接指定像素宽高。填的是自然方向（竖屏）的 W×H，横屏时系统自己换算。\n"
+             "改成与物理分辨率不同宽高比时，画面会出现黑边或拉伸，属正常现象。\n"
+             "填远大于物理分辨率的值会明显掉帧，建议配合 density 一起调而不是一味放大。"),
+            ("密度 (adb shell wm density)",
+             "直接指定 dpi。两个字段可以只改一个，另一个留空即可。\n"
+             "想模拟一台真实平板，可以两个一起设，比如 2048×1280 + 320dpi = 1024dp 宽，\n"
+             "这样 density 落在标准 xhdpi 档，资源目录选择也跟真实平板一致。"),
+        ])
+
+        ctk.CTkLabel(frame_manual, text="分辨率 (wm size)", font=ctk.CTkFont(size=11), text_color="gray", height=16).pack(pady=0, anchor="w", padx=8)
+        size_row = ctk.CTkFrame(frame_manual, fg_color="transparent")
+        size_row.pack(pady=(0, 1), padx=8, fill="x")
+        self.entry_size_w = ctk.CTkEntry(size_row, height=disp_btn_h, width=70, placeholder_text="宽")
+        self.entry_size_w.pack(side="left")
+        ctk.CTkLabel(size_row, text="×", font=ctk.CTkFont(size=12)).pack(side="left", padx=4)
+        self.entry_size_h = ctk.CTkEntry(size_row, height=disp_btn_h, width=70, placeholder_text="高")
+        self.entry_size_h.pack(side="left")
+        ctk.CTkLabel(size_row, text="px", font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(4, 0))
+        ctk.CTkButton(size_row, text="应用", width=56, height=disp_btn_h,
+                      command=self.action_apply_manual_size).pack(side="right")
+
+        ctk.CTkLabel(frame_manual, text="密度 (wm density)", font=ctk.CTkFont(size=11), text_color="gray", height=16).pack(pady=(2, 0), anchor="w", padx=8)
+        dens_row = ctk.CTkFrame(frame_manual, fg_color="transparent")
+        dens_row.pack(pady=(0, 4), padx=8, fill="x")
+        self.entry_density = ctk.CTkEntry(dens_row, height=disp_btn_h, width=70, placeholder_text="dpi")
+        self.entry_density.pack(side="left")
+        ctk.CTkLabel(dens_row, text="dpi", font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(4, 0))
+        ctk.CTkButton(dens_row, text="应用", width=56, height=disp_btn_h,
+                      command=self.action_apply_manual_density).pack(side="right")
+
+    def _highlight_tier(self, dp_w):
+        """把设备当前所处的那一档按钮标绿，其余恢复主题色。dp_w 为 None 时全部恢复。"""
+        current = None
+        if dp_w is not None:
+            for name, lo, hi, _ in self.DP_TIERS:
+                if dp_w >= lo and (hi is None or dp_w < hi):
+                    current = name
+                    break
+        default_fg = ctk.ThemeManager.theme["CTkButton"]["fg_color"]
+        default_hover = ctk.ThemeManager.theme["CTkButton"]["hover_color"]
+        for name, btn in self._tier_buttons.items():
+            if name == current:
+                btn.configure(fg_color="#2FA572", hover_color="#268A5E")
+            else:
+                btn.configure(fg_color=default_fg, hover_color=default_hover)
+
+    def refresh_display_state(self):
+        """重新读取 size / density / Configuration 并刷新状态卡与手动输入框。"""
+        if not self.adb_helper.current_device_id:
+            self._clear_display_state("未连接设备")
+            return
+
+        self.btn_display_refresh.configure(state="disabled", text="...")
+
+        def _thread():
+            err = None
+            st = None
+            try:
+                st = self.adb_helper.get_size_density_state()
+                # 读不到前台窗口不算失败（可能停在桌面或 ROM 格式不认识），
+                # 档位会自动回退按设备级 dp 判定
+                try:
+                    st["foreground"] = self.adb_helper.get_foreground_window_state()
+                except Exception:
+                    st["foreground"] = None
+            except Exception as e:
+                err = str(e)
+
+            def _on_done():
+                self.btn_display_refresh.configure(state="normal", text="刷新")
+                if err:
+                    self._clear_display_state(f"读取失败（{err}）")
+                    return
+                self._render_display_state(st)
+
+            self.after(0, _on_done)
+
+        self.adb_helper.spawn(_thread)
+
+    def _clear_display_state(self, reason):
+        self.lbl_disp_size.configure(text=f"分辨率：{reason}")
+        self.lbl_disp_density.configure(text="密度：—")
+        self.lbl_disp_factory.configure(text="出厂默认等效 dp：—")
+        self.lbl_disp_dp.configure(text="当前生效等效 dp：—")
+        self.lbl_disp_window.configure(text="前台窗口：—")
+        self.lbl_disp_window_pkg.configure(text="")
+        self.lbl_disp_tier.configure(text="档位：—")
+        self._highlight_tier(None)
+
+    def _render_display_state(self, st):
+        """把 get_size_density_state 的结果画到状态卡上，并回填手动输入框。"""
+        if st.get("over_w"):
+            size_text = (f"分辨率：{st['over_w']} × {st['over_h']} px"
+                         f"　（已覆写，物理 {st['phys_w']} × {st['phys_h']}）")
+        else:
+            size_text = f"分辨率：{st['phys_w']} × {st['phys_h']} px　（物理）"
+        self.lbl_disp_size.configure(text=size_text)
+
+        if st.get("over_density"):
+            dens_text = f"密度：{st['over_density']} dpi　（已覆写，物理 {st['phys_density']}）"
+        else:
+            dens_text = f"密度：{st['phys_density']} dpi　（物理）"
+        self.lbl_disp_density.configure(text=dens_text)
+
+        # 出厂等效 dp：按物理分辨率 + 物理密度换算，是覆写前的基准值。
+        # 这里给的是自然方向（竖屏）的 W×H，和 wm size 的输出方向一致。
+        if st.get("phys_w") and st.get("phys_density"):
+            f_w = round(st["phys_w"] * 160 / float(st["phys_density"]))
+            f_h = round(st["phys_h"] * 160 / float(st["phys_density"]))
+            self.lbl_disp_factory.configure(
+                text=f"出厂默认等效 dp：{f_w} × {f_h}（sw{min(f_w, f_h)}dp）"
+            )
+        else:
+            self.lbl_disp_factory.configure(text="出厂默认等效 dp：—")
+
+        # 设备级 Configuration：整块屏幕的当前方向尺寸
+        dp_w, dp_h = st.get("dp_w", 0), st.get("dp_h", 0)
+        if dp_w and dp_h:
+            orient = "横屏" if dp_w > dp_h else "竖屏"
+            self.lbl_disp_dp.configure(
+                text=f"当前生效等效 dp：{dp_w} × {dp_h}（sw{min(dp_w, dp_h)}dp）· {orient}"
+            )
+        else:
+            self.lbl_disp_dp.configure(text="当前生效等效 dp：未能读取 Configuration")
+
+        # 前台窗口：App 自己拿到的尺寸。关键数据放行首，包名垫后 —— 窗口窄时
+        # 截掉的是包名而不是 dp 值。
+        fg = st.get("foreground")
+        if fg:
+            mode_cn = {
+                "fullscreen": "全屏",
+                "multi-window": "分屏",
+                "freeform": "自由窗口",
+                "pinned": "画中画",
+                "split-screen-primary": "分屏(主)",
+                "split-screen-secondary": "分屏(次)",
+            }.get(fg["mode"], fg["mode"])
+            self.lbl_disp_window.configure(
+                text=f"前台窗口：{fg['w_dp']} × {fg['h_dp']} dp（sw{fg['sw_dp']}dp）· {mode_cn}"
+            )
+            self.lbl_disp_window_pkg.configure(text=fg["package"])
+        else:
+            self.lbl_disp_window.configure(text="前台窗口：未读到（可能停在桌面）")
+            self.lbl_disp_window_pkg.configure(text="")
+
+        # 档位以前台窗口宽为准 —— 适配规则第 1 条就是按 App 自身窗口宽判档。
+        # 读不到前台窗口才回退用设备级的值。
+        tier_dp = fg["w_dp"] if fg else dp_w
+        if tier_dp:
+            suffix = "" if fg else "（设备级）"
+            self.lbl_disp_tier.configure(text=f"档位：{self._tier_of(tier_dp)}{suffix}")
+            self._highlight_tier(tier_dp)
+        else:
+            self.lbl_disp_tier.configure(text="档位：—")
+            self._highlight_tier(None)
+
+        # 回填手动输入框：填当前生效值，用户想微调时不必自己抄一遍
+        for entry, val in (
+            (self.entry_size_w, st.get("cur_w")),
+            (self.entry_size_h, st.get("cur_h")),
+            (self.entry_density, st.get("cur_density")),
+        ):
+            entry.delete(0, "end")
+            if val:
+                entry.insert(0, str(val))
+
+    # wm size 的安全上限。单边超过这个值，等比放大后的总像素已经到几千万级，
+    # 合成器压力过大，实测会掉帧甚至花屏。
+    SIZE_MAX_PX = 10000
+
+    def action_apply_target_dp(self, target_dp, label=None):
+        """把当前方向的窗口 dp 宽推到 target_dp。
+
+        两种方式互斥，都只动一个量：
+        - 改分辨率：density 不动，wm size 宽高同乘 k = target_dp / 当前dp。
+          dp 与 px 成正比，所以这个等比缩放在横屏、竖屏下都能精确命中目标，
+          不必按方向分情况；宽高比不变，画面也不会变形。
+        - 改密度：px 不动，density 与 dp 宽成反比，直接反比换算。
+        """
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+
+        by_size = (self.dp_mode_var.get() == "改分辨率")
+
+        def _thread():
+            try:
+                st = self.adb_helper.get_size_density_state()
+            except Exception as e:
+                self.log(f"读取当前屏幕状态失败: {e}", "ERROR")
+                return
+
+            cur_dp = st.get("dp_w", 0)
+            cur_density = st.get("cur_density", 0)
+            cur_w, cur_h = st.get("cur_w", 0), st.get("cur_h", 0)
+            if not cur_dp or not cur_density or not cur_w or not cur_h:
+                self.log("未能读到当前分辨率/密度/dp 宽，请改用「手动覆写」直接填值", "ERROR")
+                return
+
+            tag = f"{label} " if label else ""
+
+            if by_size:
+                k = target_dp / float(cur_dp)
+                # 驱动维 = 当前方向的"窗口宽"落在自然方向（wm size 的 W×H）上的那一维。
+                # 竖屏时是 W，横屏时窗口宽是长边、对应 H。
+                portrait = st.get("dp_w", 0) <= st.get("dp_h", 0)
+                drive, other = (cur_w, cur_h) if portrait else (cur_h, cur_w)
+                # 向上取偶：取偶是因为部分 ROM 对奇数宽高渲染异常；必须向上而不能四舍五入，
+                # 否则目标 840 会算出 2046px → 839dp，正好掉回 Medium 档，
+                # 而验证 839/840 边界恰恰是这个功能最主要的用途。
+                new_drive = -(-int(math.ceil(drive * k)) // 2) * 2
+                new_other = int(round(other * new_drive / float(drive))) & ~1
+                new_w, new_h = (new_drive, new_other) if portrait else (new_other, new_drive)
+                if new_w > self.SIZE_MAX_PX or new_h > self.SIZE_MAX_PX:
+                    self.log(
+                        f"目标 {target_dp}dp 需要 {new_w}x{new_h}，单边超过 {self.SIZE_MAX_PX}px 上限。"
+                        f"请改用「改密度」方式，或先把密度调低再试",
+                        "ERROR",
+                    )
+                    return
+                if new_w * new_h > 20_000_000:
+                    self.log(
+                        f"{new_w}x{new_h} 约 {new_w * new_h / 1e6:.0f}M 像素，"
+                        f"设备可能明显掉帧；只验证布局分档的话可切「改密度」",
+                        "WARNING",
+                    )
+                self.log(
+                    f"切换至 {tag}{target_dp}dp：当前 {cur_dp}dp / {cur_w}x{cur_h} @ {cur_density}dpi "
+                    f"→ wm size {new_w}x{new_h}（密度不变）",
+                    "INFO",
+                )
+                ok, out = self.adb_helper.set_screen_size(new_w, new_h)
+                if not ok:
+                    self.log(f"设置分辨率失败: {out}", "ERROR")
+                    return
+            else:
+                # dp 宽与 density 成反比：dp = px × 160 / density
+                # 同理向下取整：dp 与 density 成反比，density 取小才能保证 dp 不低于目标。
+                # 例：390dpi/852dp 要到 840dp，四舍五入得 396 → 实际 839dp，正好掉档。
+                new_density = int(math.floor(cur_density * cur_dp / float(target_dp)))
+                clamped = max(self.DENSITY_MIN, min(self.DENSITY_MAX, new_density))
+                if clamped != new_density:
+                    # 夹取后实际 dp 会偏离目标，说清楚落到哪，别让用户以为设成功了
+                    actual_dp = round(cur_dp * cur_density / float(clamped))
+                    self.log(
+                        f"目标 {target_dp}dp 需要 density={new_density}，超出安全区间 "
+                        f"[{self.DENSITY_MIN}, {self.DENSITY_MAX}]，改用 {clamped}（实际约 {actual_dp}dp）",
+                        "WARNING",
+                    )
+                    new_density = clamped
+                self.log(
+                    f"切换至 {tag}{target_dp}dp：当前 {cur_dp}dp @ {cur_density}dpi "
+                    f"→ wm density {new_density}（分辨率不变）",
+                    "INFO",
+                )
+                ok, out = self.adb_helper.set_screen_density(new_density)
+                if not ok:
+                    self.log(f"设置密度失败: {out}", "ERROR")
+                    return
+
+            # Configuration 更新有延迟，立刻读会拿到旧值
+            time.sleep(0.8)
+            self.after(0, self.refresh_display_state)
+
+        self.adb_helper.spawn(_thread)
+
+    def action_apply_custom_dp(self):
+        raw = self.entry_target_dp.get().strip()
+        try:
+            target = int(raw)
+        except ValueError:
+            messagebox.showwarning("提示", "请输入一个整数 dp 宽度，例如 840", parent=self)
+            return
+        if not 200 <= target <= 4000:
+            messagebox.showwarning("提示", "dp 宽度请填在 200–4000 之间", parent=self)
+            return
+        self.action_apply_target_dp(target)
+
+    def action_apply_manual_size(self):
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+        try:
+            w = int(self.entry_size_w.get().strip())
+            h = int(self.entry_size_h.get().strip())
+        except ValueError:
+            messagebox.showwarning("提示", "分辨率的宽和高都要填整数像素", parent=self)
+            return
+        if not (100 <= w <= 10000 and 100 <= h <= 10000):
+            messagebox.showwarning("提示", "分辨率请填在 100–10000 px 之间", parent=self)
+            return
+
+        def _thread():
+            ok, out = self.adb_helper.set_screen_size(w, h)
+            if not ok:
+                self.log(f"设置分辨率失败: {out}", "ERROR")
+                return
+            self.log(f"已将分辨率覆写为 {w}x{h}", "SUCCESS")
+            time.sleep(0.8)
+            self.after(0, self.refresh_display_state)
+
+        self.adb_helper.spawn(_thread)
+
+    def action_apply_manual_density(self):
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+        try:
+            d = int(self.entry_density.get().strip())
+        except ValueError:
+            messagebox.showwarning("提示", "密度要填整数 dpi", parent=self)
+            return
+        if not self.DENSITY_MIN <= d <= self.DENSITY_MAX:
+            messagebox.showwarning(
+                "提示",
+                f"密度请填在 {self.DENSITY_MIN}–{self.DENSITY_MAX} dpi 之间。\n"
+                "过低会导致部分 ROM 渲染异常。",
+                parent=self,
+            )
+            return
+
+        def _thread():
+            ok, out = self.adb_helper.set_screen_density(d)
+            if not ok:
+                self.log(f"设置密度失败: {out}", "ERROR")
+                return
+            self.log(f"已将密度覆写为 {d} dpi", "SUCCESS")
+            time.sleep(0.8)
+            self.after(0, self.refresh_display_state)
+
+        self.adb_helper.spawn(_thread)
+
+    def action_reset_screen_override(self):
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+
+        def _thread():
+            ok, out = self.adb_helper.reset_screen_override()
+            if ok:
+                self.log("已恢复设备默认分辨率与密度", "SUCCESS")
+            else:
+                # size 从未被覆写时 `wm size reset` 在部分 ROM 上会报错，
+                # 但 density 那条已经执行过了，所以只降级为警告
+                self.log(f"恢复默认时部分命令未成功（通常无碍）: {out}", "WARNING")
+            time.sleep(0.8)
+            self.after(0, self.refresh_display_state)
+
+        self.adb_helper.spawn(_thread)
+
     def action_play_ringtone(self, sound_type):
         def _thread():
             try:
@@ -385,12 +913,17 @@ class ToolsTab(ctk.CTkFrame):
         self.adb_helper.spawn(_push_thread)
 
     def on_category_change(self, value):
-        if value == "设备与系统控制":
-            self.container_simulation.pack_forget()
-            self.container_system.pack(fill="both", expand=True)
-        elif value == "环境与状态模拟":
-            self.container_system.pack_forget()
-            self.container_simulation.pack(fill="both", expand=True)
+        target = self._category_containers.get(value)
+        if target is None:
+            return
+        for name, frame in self._category_containers.items():
+            if frame is not target:
+                frame.pack_forget()
+        target.pack(fill="both", expand=True)
+        # 屏幕与显示的状态卡是"拍快照"式的，每次切进来重新拉一次，
+        # 免得显示的还是上次离开时的分辨率
+        if value == "屏幕与显示":
+            self.refresh_display_state()
 
     def action_send_text(self):
         text = self.entry_input_text.get()
@@ -580,28 +1113,16 @@ class ToolsTab(ctk.CTkFrame):
 
         self.adb_helper.spawn(_thread)
 
-    def action_enable_gesture_nav(self):
+    def action_open_navigation_settings(self):
         def _thread():
             try:
-                success, output = self.adb_helper.enable_gesture_nav()
+                success, output = self.adb_helper.open_navigation_settings()
                 if success:
-                    self.log("已切换为全面屏手势导航", "SUCCESS")
+                    self.log("已唤起设备系统导航方式设置页", "SUCCESS")
                 else:
-                    self.log(f"切换全面屏手势失败: {output}", "ERROR")
+                    self.log(f"唤起导航方式设置页失败: {output}", "ERROR")
             except Exception as e:
-                self.log(f"切换全面屏手势异常: {e}", "ERROR")
-        self.adb_helper.spawn(_thread)
-
-    def action_enable_threebutton_nav(self):
-        def _thread():
-            try:
-                success, output = self.adb_helper.enable_threebutton_nav()
-                if success:
-                    self.log("已切换为三键导航", "SUCCESS")
-                else:
-                    self.log(f"切换三键导航失败: {output}", "ERROR")
-            except Exception as e:
-                self.log(f"切换三键导航异常: {e}", "ERROR")
+                self.log(f"唤起导航方式设置页异常: {e}", "ERROR")
         self.adb_helper.spawn(_thread)
 
     FAKE_DNS_HOST = "fake.domain.test"

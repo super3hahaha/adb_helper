@@ -7,7 +7,9 @@ adb_helper/
 ├── start.bat                # Windows 快速启动脚本
 ├── requirements.txt         # Python 依赖清单
 ├── core/                    # 核心业务逻辑
-│   ├── adb_helper.py        # ADB 命令封装与设备管理（含多设备并行的线程绑定：
+│   ├── adb_helper.py        # ADB 命令封装与设备管理（含 wm size/density 覆写、
+│   │                        #   get_size_density_state 轻量查询、get_foreground_window_state
+│   │                        #   读前台窗口真实 dp；多设备并行的线程绑定：
 │   │                        #   active_device_id / bind_device / spawn，见 gotchas）
 │   ├── config.py            # 应用级常量：APP_VERSION / APP_NAME / GITHUB_REPO
 │   ├── config_manager.py    # 配置读写与持久化
@@ -21,7 +23,8 @@ adb_helper/
 │   ├── utils.py             # UI 工具函数
 │   ├── tabs/                # 主界面各 Tab 页
 │   │   ├── app_manage_tab.py    # App 操作 Tab
-│   │   ├── tools_tab.py         # 实用工具 Tab
+│   │   ├── tools_tab.py         # 实用工具 Tab（三个分类：设备与系统控制 / 环境与状态模拟 /
+│   │   │                        #   屏幕与显示。后者按 dp 档位模拟大屏，见 gotchas 取整方向）
 │   │   ├── apk_manager_tab.py   # APK 管理 Tab
 │   │   └── settings_tab.py      # 设置 Tab
 │   ├── components/          # 可复用 UI 组件

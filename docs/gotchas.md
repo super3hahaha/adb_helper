@@ -4,6 +4,10 @@
 
 ## ADB
 
+### 系统导航方式入口由设备设置应用决定
+
+「切换系统导航方式」通过 `am start -a com.android.settings.NAVIGATION_MODE_SETTINGS` 打开 AOSP 的导航选择页，用户在设备上自行选择手势或三键。这个 action 属于 Settings 应用而非公开 Android SDK；厂商 ROM 不提供对应 Activity 时会启动失败，UI 应显示失败日志，不能把命令成功误报成模式已切换。
+
 ### `dumpsys window` insets 格式有多套
 
 不同 Android 版本输出完全不同：
@@ -75,6 +79,79 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 
 用户在「设置 → 显示 → 屏幕分辨率」改过分辨率，或开过显示模式调试时，会多出一行 `Override size: AxB`。这才是当前生效的值，原始 `Physical size` 是出厂值。Density 同理。
 
+### `am get-config` 是**设备级**的，多窗口下判不了档
+
+布局判档看的是 App 自身窗口宽（适配规则第 1 条：分屏、自由窗口按 App 自身窗口宽判档）。
+但 `am get-config` 返回整块屏幕的 Configuration —— App 被拖成自由窗口或进分屏时它纹丝不动。
+实测内屏 852dp 的 Pixel 9 Pro Fold，App 拖成半宽小窗后窗口只有 421dp：
+设备级报 Expanded，App 实际在 Compact，**差两个档**。
+
+要拿 App 真正的窗口宽，读前台 Activity 自己的配置：
+
+```
+dumpsys activity activities
+  → topResumedActivity=ActivityRecord{... <pkg>/<activity> t<taskId>}
+  → 该行之后的第一个 CurrentConfiguration={... sw443dp w443dp h994dp 390dpi
+       winConfig={ mBounds=Rect(0,0-1080,2424) mAppBounds=... mWindowingMode=fullscreen }}
+```
+
+- `w###dp` 就是判档依据，freeform / 分屏下已被 task bounds 改写成窗口自身的值
+- `mBounds` 窗口整体像素矩形，`mAppBounds` 扣掉系统栏后的可绘制区
+- `mWindowingMode` = fullscreen / multi-window / freeform / pinned
+
+所以面板上「档位」一行按前台窗口宽判定，读不到才回退到设备级的值。
+
+**别在设备端 grep 裁剪**：不同 Activity 的段落长度不一，`grep -A<n>` 的行数窗口时而框不到
+`CurrentConfiguration`（实测 `-A25` 就会漏，换个 Activity 又能中，很难察觉）。
+全量约 50KB / ~150ms，拉回本地正则定位反而稳。
+
+另外 `am task set-windowing-mode` 在部分 Android 版本不存在，`am start --windowingMode` 又会被
+未 exported 的 Activity 挡掉（SecurityException），所以**没法用 adb 可靠地把 App 摆进小窗**，
+只能人工拖好窗口再点刷新。
+
+### 模拟 dp 档位时，取整方向必须"宁可超一点也不能差一点"
+
+「屏幕与显示」的档位按钮要把窗口 dp 宽推到 840 / 1000 这种**档位下沿**，而适配规则是
+`>=840` 才算 Expanded。四舍五入会让实际值落到 839，正好掉回上一档 —— 而验证 839/840
+边界恰恰是这个功能最主要的用途，这个 bug 会让功能整个失效且不易察觉。
+
+所以两条路的取整方向都是定死的：
+
+| 方式 | 换算 | 取整 | 反例（Pixel 9 Fold 2076px@390dpi，852dp → 目标 840dp） |
+|---|---|---|---|
+| 改分辨率 | `px' = px × 目标dp/当前dp` | **向上**取偶 | 四舍五入得 2046px → 839dp ✗；向上取偶得 2048px → 840dp ✓ |
+| 改密度 | `density' = density × 当前dp/目标dp` | **向下**取整 | 四舍五入得 396 → 838.8 ≈ 839dp ✗；向下取整得 395 → 840.9 ≈ 840dp ✓ |
+
+取偶是另一回事：部分 ROM 对奇数宽高会渲染异常，所以 `wm size` 一律给偶数。
+
+### 改分辨率模拟大屏：等比缩放宽高，不必按方向分情况
+
+`wm size` 填的是**自然方向**（竖屏）的 W×H，而档位判定看的是**当前方向**的窗口 dp 宽，
+两者在横屏时对应的不是同一维。但因为 density 不动时 dp 与 px 成正比，把 W 和 H **同时**
+乘以 `k = 目标dp/当前dp`，当前方向的窗口 dp 宽必然也变成 k 倍 —— 横屏竖屏都精确命中，
+而且宽高比不变、画面不会变形。代码里仍然区分了驱动维，只是为了让"向上取偶"落在正确那一维上。
+
+一个残留误差：横屏时 `screenWidthDp` 会扣掉侧边导航栏，而那个 inset 的 px 值不随 `wm size`
+等比变化，所以横屏下切档位可能偏几 dp。切完会自动刷新并显示真实落点，以那个为准。
+
+### `wm size` 放大到物理分辨率之上会掉帧，高 dpi 老设备尤其明显
+
+渲染像素数按 k² 增长。Pixel 9 Pro Fold（2076x2152@390dpi）推到 1100dp 只要 7.5M 像素，
+比原生还轻；但 SM-G9250（1440x2560@**640**dpi）推到 1100dp 需要 4400x7822 = 34M 像素，
+必然卡爆。dpi 越高、目标 dp 越大，代价涨得越凶。
+
+所以档位面板给了「改密度」作为备选：px 不动只降 density，零渲染代价，缺点是屏幕元素变小、
+且 density 变了会改变 `drawable-xxhdpi` 这类资源目录的选择 —— 排查切图资源问题时别用它。
+代码里单边超 `SIZE_MAX_PX`(10000) 直接拒绝并提示换方式，超 2000 万像素给 WARNING。
+
+### 覆写 size / density 后必须手动清 `screen_info` 缓存
+
+缓存键是 Configuration 的 dp 串，改完 size/density 后 dp 变了、键也跟着变，所以正常情况
+不会误命中。但"改过去再改回来"会**精准撞回旧槽**，于是 `set_screen_size` /
+`set_screen_density` / `reset_screen_override` 一律调 `_invalidate_screen_cache()` 清掉。
+
+另外 Configuration 更新有延迟，改完立刻读 `am get-config` 会拿到旧值，UI 侧统一 `sleep(0.8)` 再刷新。
+
 ### `get_screen_info()` 有磁盘缓存，缓存键 = device_id + Configuration 串
 
 落盘路径：`%LOCALAPPDATA%\VisualADBManager\screen_info_cache.json`（mac/linux 对应 appdata 目录）。
@@ -93,7 +170,7 @@ InsetsSource id=c85b0001 type=navigationBars frame=[0,2274][1080,2400] visible=f
 - 命中缓存延迟从 ~500ms 降到 ~50ms。
 - 方向变了自动重查并落盘。
 - 想强制刷新：`get_screen_info(force_refresh=True)`，或直接删 json 文件。
-- 如果用户在系统设置里改了分辨率/密度，缓存不会自动失效（rotation 没变）。这种是低频场景，目前不处理。
+- 工具内（「屏幕与显示」）改分辨率/密度会主动清缓存；但用户在**系统设置**里改的，缓存不会自动失效，这种低频场景不处理。
 - Cache schema 版本号在 `screen_info_cache.py:_SCHEMA_VERSION`，改完字段记得 bump，老数据会被自动当作脏数据丢掉。
 
 调用方（截图文件名拼"可用宽x可用高"那段）走默认缓存路径，加速截图。
@@ -388,7 +465,29 @@ Tk Canvas 的 `PhotoImage` 位图在 macOS Retina（2x）下被系统拉伸 → 
 
 ### 已知不做的部分
 
-**按钮禁用仍是全局的**（`btn_screen_info` / 刷新 APK / Firebase 等）：设备1查询期间设备2也点不了那个按钮。不影响并行的正确性，只是体验别扭，实测撞上概率低——安装按钮本来就不禁用，主路径不受影响。同理没做"后台有 N 个任务"的状态栏，日志会持续输出，够用。
+**按钮禁用仍是全局的**（`btn_screen_info` / 刷新 APK / Firebase 等）：设备1查询期间设备2也点不了那个按钮。不影响并行的正确性，只是体验别扭，实测撞上概率低——安装按钮本来就不禁用，主路径不受影响，正确性靠下面的设备级串行队列而不是靠禁用按钮。同理没做"后台有 N 个任务"的状态栏，日志会持续输出，够用。
+
+### 安装/卸载的设备级串行队列（不是全部命令都并行）
+
+2026-08-12：上面整节讲的"adb 侧本来就并行，代码也无全局执行锁"对大多数命令成立，但**安装/卸载是例外**——用户可能连续点击（先卸载再装新版本、连续装两个包），如果每次都像其它命令一样各开一条独立线程，会出现"卸载还没跑完，安装命令已经发出去"的竞态，谁先谁后完全看命令耗时和点击间隔，没有任何保证。
+
+`core/adb_helper.py` 加了一条**按 device_id 惰性建的串行队列**（`_device_op_queues` / `_get_device_op_queue` / `_device_op_worker`）：
+
+- 每个 device_id 对应一个 `queue.Queue` + 一个常驻 worker 线程（首次用到才建，建好之后一直存在）。
+- worker 是单线程 `while True: task = q.get(); task()`，天然 FIFO：上一条命令的 `execute_adb_command`（同步阻塞）跑完才会取下一条，**同一设备的任务严格按 enqueue 顺序执行**。
+- 不同设备各自的队列/worker 互相独立，跟本节"多设备并行"的结论不冲突——并行的边界从"每条命令一开线程"收窄到了"每台设备一条串行流水线"。
+
+`run_adb_queued`（异步，`on_complete` 回调）和 `run_adb_queued_sync`（阻塞等结果，供拖拽安装这类"调用方自己已经在后台线程、要拿返回值"的场景）是对外的两个入口，分别对应原来的 `run_adb_async` 和裸调 `execute_adb_command`。`uninstall_app` / `install_apk` / `install_apk_sync`（按钮触发 + 拖拽安装）三个入口全部改走这条队列，共享同一把设备锁，互不插队。
+
+**其它命令（截图、启动、停止、清数据等）没有改**，继续用 `run_adb_async`/`spawn` 各开线程——只有安装/卸载这类"顺序错了会直接导致失败"的操作才值得付出队列的复杂度，别把这个机制泛化到所有命令上。
+
+### 导出大文件（adb pull）不能用通用 20s 超时
+
+2026-09-14：文件管理器导出一个 ~12GB 的压缩包，命中 `SHELL_TIMEOUT=20s` 通用超时被直接判定"命令超时，设备可能休眠/未授权或 USB 异常"，但实际只是传输还没传完——`execute_adb_command` 默认超时是给"设备真的卡死"兜底的，不是给"正常但慢的大文件传输"设计的（同类坑之前 `PUSH_TIMEOUT`/`INSTALL_TIMEOUT` 已经踩过一次，pull 这条路径当时漏改了）。
+
+修法：加了 `PULL_TIMEOUT = 1800`（30 分钟，按实测 USB 吞吐一二十 MB/s 估的量级），`pull_files`（文件管理器批量导出）和 `stop_recording` 里拉取录屏视频这两处 `adb pull` 都传了这个 timeout；`take_screenshot` 里拉 png 那次没改，文件本来就几百 KB，用不着。
+
+如果以后再出现"导出更大的文件（几十上百 GB）还是超时"，不要继续往上调数字，应该考虑要么做进度轮询式的超时（比如连续 N 秒文件大小没变化才判定卡死），要么干脆去掉 pull 这条路径的超时——固定时间上限和"文件大小不定"这个前提本身就有点拧巴。
 
 ## 无线调试（多设备）
 
