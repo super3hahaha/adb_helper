@@ -594,6 +594,24 @@ class ADBHelper:
             stderr = result.stderr.strip()
 
             if result.returncode == 0:
+                # `am start` 在无法解析 Intent、目标未导出等情况下，部分 Android
+                # 版本仍会返回 shell exit code 0，只把失败写进 stdout。不能仅凭
+                # returncode 把这类命令记成成功。
+                try:
+                    shell_idx = cmd_list.index("shell")
+                    is_am_start = cmd_list[shell_idx + 1:shell_idx + 3] == ["am", "start"]
+                except ValueError:
+                    is_am_start = False
+                am_output = "\n".join(part for part in (stdout, stderr) if part)
+                am_start_failed = is_am_start and (
+                    re.search(r"(?m)^Error:\s", am_output) is not None
+                    or "Exception occurred while executing 'start'" in am_output
+                )
+                if am_start_failed:
+                    error_msg = am_output
+                    self.log(f"执行失败（Activity 未启动）:\n{error_msg}", "ERROR")
+                    return False, error_msg
+
                 if stdout:
                     self.log(f"结果:\n{stdout}", "SUCCESS")
                 else:
@@ -1026,10 +1044,53 @@ class ADBHelper:
         self.check_device()
         return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.LOCALE_SETTINGS"])
 
+    def _resolve_activity_action(self, action):
+        """返回 action 的默认 Activity；无处理者或只能弹选择器时返回空串。"""
+        output = self._shell_silent([
+            "shell", "cmd", "package", "resolve-activity", "--brief", "-a", action
+        ])
+        if not output or "No activity found" in output:
+            return ""
+
+        components = re.findall(
+            r"(?m)^([A-Za-z0-9_.]+/(?:\.)?[A-Za-z0-9_.$]+)$",
+            output,
+        )
+        if not components:
+            return ""
+        component = components[-1]
+        if "ResolverActivity" in component:
+            return ""
+        return component
+
     def open_navigation_settings(self):
-        """唤起系统导航方式选择页（由设备设置应用处理）。"""
+        """打开系统导航方式入口。
+
+        AOSP 的导航方式选择页是 Settings 内部、未导出的 SubSettings fragment，
+        shell UID 不能直接启动。优先尝试厂商可能提供的直达 action；否则使用
+        Android Settings 搜索并预填“系统导航”，由受信任的搜索组件完成跳转。
+        """
         self.check_device()
-        return self.execute_adb_command(["adb", "shell", "am", "start", "-a", "com.android.settings.NAVIGATION_MODE_SETTINGS"])
+
+        direct_action = "com.android.settings.NAVIGATION_MODE_SETTINGS"
+        if self._resolve_activity_action(direct_action):
+            success, output = self.execute_adb_command([
+                "adb", "shell", "am", "start", "-W", "-a", direct_action
+            ])
+            if success:
+                return True, "已打开系统导航方式设置页"
+
+        search_action = "android.settings.APP_SEARCH_SETTINGS"
+        if self._resolve_activity_action(search_action):
+            success, output = self.execute_adb_command([
+                "adb", "shell", "am", "start", "-W", "-a", search_action,
+                "--es", "query", _device_sh_quote("系统导航"),
+            ])
+            if success:
+                return True, "已打开设置搜索并定位“系统导航”，请点击搜索结果进入选择页"
+            return False, output
+
+        return False, "设备未提供可用的系统导航设置入口或 Settings 搜索组件"
 
     ADB_KB_PKG = "com.android.adbkeyboard"
     ADB_KB_IME = f"{ADB_KB_PKG}/.AdbIME"

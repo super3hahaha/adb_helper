@@ -52,6 +52,8 @@ adb_helper/
 │           └── shared.py                # 字体/文本换行/常量 纯函数
 ├── resources/               # 内置资源
 │   └── ADBKeyboard.apk      # ADB Keyboard 输入法
+├── tests/                   # 标准库 unittest；ADB 逻辑以 mock 覆盖，不依赖真机
+│   └── test_adb_helper_navigation.py # 导航设置入口解析与 am start 失败判定
 ├── docs/                    # 文档资源
 │   └── setup_guide.png      # 初始化配置引导图
 └── .github/workflows/       # CI/CD

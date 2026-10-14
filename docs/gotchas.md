@@ -6,7 +6,11 @@
 
 ### 系统导航方式入口由设备设置应用决定
 
-「切换系统导航方式」通过 `am start -a com.android.settings.NAVIGATION_MODE_SETTINGS` 打开 AOSP 的导航选择页，用户在设备上自行选择手势或三键。这个 action 属于 Settings 应用而非公开 Android SDK；厂商 ROM 不提供对应 Activity 时会启动失败，UI 应显示失败日志，不能把命令成功误报成模式已切换。
+不要把 `com.android.settings.NAVIGATION_MODE_SETTINGS` 当成 AOSP 标准 action。Pixel 4 / Android 13 实测无处理者；目标页实际是 `com.android.settings.gestures.SystemNavigationGestureSettings`，承载于未导出的 `com.android.settings/.SubSettings`，shell UID 直启会被 `SecurityException` 拒绝。
+
+当前策略：先用 `cmd package resolve-activity` 检查厂商是否提供上述直达 action；没有则启动 `android.settings.APP_SEARCH_SETTINGS`，通过 `--es query '系统导航'` 预填 Settings 搜索，用户点击唯一结果后进入手势/三按钮选择页。搜索组件不存在时明确报错，不伪装成已打开。
+
+另一个坑是 `am start` 在部分失败场景仍返回 exit code 0，例如 stdout 同时出现 `Starting:` 和 `Error: Activity not started, unable to resolve Intent`。`execute_adb_command()` 对 `am start` 额外检查 `Error:` / `Exception occurred while executing 'start'`，不能只看 returncode。
 
 ### `dumpsys window` insets 格式有多套
 

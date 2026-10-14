@@ -1118,7 +1118,7 @@ class ToolsTab(ctk.CTkFrame):
             try:
                 success, output = self.adb_helper.open_navigation_settings()
                 if success:
-                    self.log("已唤起设备系统导航方式设置页", "SUCCESS")
+                    self.log(output or "已打开系统导航方式入口", "SUCCESS")
                 else:
                     self.log(f"唤起导航方式设置页失败: {output}", "ERROR")
             except Exception as e:
