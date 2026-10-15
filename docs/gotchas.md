@@ -8,7 +8,9 @@
 
 不要把 `com.android.settings.NAVIGATION_MODE_SETTINGS` 当成 AOSP 标准 action。Pixel 4 / Android 13 实测无处理者；目标页实际是 `com.android.settings.gestures.SystemNavigationGestureSettings`，承载于未导出的 `com.android.settings/.SubSettings`，shell UID 直启会被 `SecurityException` 拒绝。
 
-当前策略：先用 `cmd package resolve-activity` 检查厂商是否提供上述直达 action；没有则启动 `android.settings.APP_SEARCH_SETTINGS`，通过 `--es query '系统导航'` 预填 Settings 搜索，用户点击唯一结果后进入手势/三按钮选择页。搜索组件不存在时明确报错，不伪装成已打开。
+当前策略：先用 `cmd package resolve-activity` 检查厂商是否提供上述直达 action；没有则启动 `android.settings.APP_SEARCH_SETTINGS`。搜索词不能固定写成中文：先读 `persist.sys.locale`（空时回退 `ro.product.locale`），再使用 Android 13 AOSP 的 `system_navigation_title` 本地化标题。需要特别处理 `zh-Hans`、`zh-Hant-TW`、`zh-Hant-HK`、`sr-Latn` 及新旧语言码别名；AOSP 未支持的语言按系统资源规则回退英文。用户点击搜索结果后进入手势/三按钮选择页。搜索组件不存在时明确报错，不伪装成已打开。
+
+不要试图把 `:settings:show_fragment=com.android.settings.gestures.SystemNavigationGestureSettings` 塞给 `android.settings.SETTINGS`：Pixel 4 / Android 13 实测外部 extras 会被主页忽略，只会打开 `SettingsHomepageActivity`，并不能绕过未导出 `SubSettings` 的限制。
 
 另一个坑是 `am start` 在部分失败场景仍返回 exit code 0，例如 stdout 同时出现 `Starting:` 和 `Error: Activity not started, unable to resolve Intent`。`execute_adb_command()` 对 `am start` 额外检查 `Error:` / `Exception occurred while executing 'start'`，不能只看 returncode。
 

@@ -27,6 +27,85 @@ def _device_sh_quote(s: str) -> str:
     路径里出现 ( ) 空格 ; & | * ? 等字符时必须由调用方自己引号化。"""
     return "'" + s.replace("'", "'\\''") + "'"
 
+
+# Android 13 AOSP Settings 的 system_navigation_title。键使用 BCP-47 的语言部分；
+# 有文字/地区差异的语言在 _navigation_search_query() 中单独处理。
+_SYSTEM_NAVIGATION_TITLES = {
+    "af": "Stelselnavigasie",
+    "am": "የሥርዓት ዳሰሳ",
+    "ar": "التنقل داخل النظام",
+    "as": "ছিষ্টেম নেভিগেশ্বন",
+    "az": "Sistem naviqasiyası",
+    "be": "Сістэмная навігацыя",
+    "bg": "Навиг. в системата",
+    "bn": "সিস্টেম নেভিগেশন",
+    "bs": "Navigacija sistemom",
+    "ca": "Navegació del sistema",
+    "cs": "Systémová navigace",
+    "da": "Systemnavigering",
+    "de": "Systemsteuerung",
+    "el": "Πλοήγηση συστήματος",
+    "en": "System navigation",
+    "es": "Navegación del sistema",
+    "et": "Süsteemis navigeerimine",
+    "eu": "Sisteman nabigatzeko modua",
+    "fa": "پیمایش سیستمی",
+    "fi": "Järjestelmänavigointi",
+    "fr": "Navigation système",
+    "gl": "Navegación do sistema",
+    "gu": "સિસ્ટમ નૅવિગેશન",
+    "he": "ניווט במערכת",
+    "hi": "सिस्टम नेविगेशन",
+    "hr": "Navigacija sustavom",
+    "hu": "Rendszer-navigáció",
+    "hy": "Նավիգացիա համակարգում",
+    "id": "Navigasi sistem",
+    "is": "Kerfisstjórnun",
+    "it": "Navigazione del sistema",
+    "ja": "システム ナビゲーション",
+    "ka": "სისტემური ნავიგაცია",
+    "kk": "Жүйе навигациясы",
+    "km": "ការរុករកក្នុង​ប្រព័ន្ធ",
+    "kn": "ಸಿಸ್ಟಂ ನ್ಯಾವಿಗೇಶನ್",
+    "ko": "시스템 탐색",
+    "ky": "Системанын ичинде чабыттоо",
+    "lo": "ການນຳທາງລະບົບ",
+    "lt": "Sistemos naršymas",
+    "lv": "Sistēmas navigācija",
+    "mk": "Навигација низ системот",
+    "ml": "സിസ്‌റ്റം നാവിഗേഷൻ",
+    "mn": "Системийн навигац",
+    "mr": "सिस्टीम नेव्हिगेशन",
+    "ms": "Navigasi sistem",
+    "my": "စနစ် လမ်းညွှန်ခြင်း",
+    "nb": "Systemnavigasjon",
+    "ne": "सिस्टम नेभिगेसन",
+    "nl": "Systeemnavigatie",
+    "or": "ସିଷ୍ଟମ୍ ନାଭିଗେସନ୍",
+    "pa": "ਸਿਸਟਮ ਨੈਵੀਗੇਸ਼ਨ",
+    "pl": "Nawigacja w systemie",
+    "pt": "Navegação no sistema",
+    "ro": "Navigarea sistemului",
+    "ru": "Навигация в системе",
+    "si": "පද්ධති සංචලනය",
+    "sk": "Navigácia v systéme",
+    "sl": "Krmarjenje po sistemu",
+    "sq": "Navigimi i sistemit",
+    "sr": "Навигација кроз систем",
+    "sv": "Systemnavigering",
+    "sw": "Usogezaji kwenye mfumo",
+    "ta": "சிஸ்டம் வழிசெலுத்தல்",
+    "te": "సిస్టమ్ నావిగేషన్‌",
+    "th": "การนำทางของระบบ",
+    "tl": "System navigation",
+    "tr": "Sistemde gezinme",
+    "uk": "Навігація в системі",
+    "ur": "سسٹم نیویگیشن",
+    "uz": "Tizim navigatsiyasi",
+    "vi": "Di chuyển trên hệ thống",
+    "zu": "Ukubhekabheka kwesistimu",
+}
+
 class ADBHelper:
     def __init__(self, log_callback=None):
         self.log_callback = log_callback
@@ -1063,12 +1142,51 @@ class ADBHelper:
             return ""
         return component
 
+    def _get_device_locale(self):
+        """读取设备当前界面 Locale，优先使用用户设置而不是出厂 Locale。"""
+        for prop in ("persist.sys.locale", "ro.product.locale"):
+            output = (self._shell_silent(["shell", "getprop", prop]) or "").strip()
+            locale = output.split(",", 1)[0].strip().replace("_", "-")
+            if re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale):
+                return locale
+        return "en-US"
+
+    @staticmethod
+    def _navigation_search_query(locale):
+        """按设备 Locale 返回 AOSP Settings 中“系统导航”的本地化标题。"""
+        normalized = (locale or "").replace("_", "-").lower()
+        parts = [part for part in normalized.split("-") if part]
+        language = parts[0] if parts else "en"
+
+        # Android 旧语言码兼容 BCP-47 新语言码。
+        language = {
+            "fil": "tl",
+            "in": "id",
+            "iw": "he",
+            "no": "nb",
+        }.get(language, language)
+
+        if language == "zh":
+            if "tw" in parts:
+                return "系統操作機制"
+            if "hk" in parts or "mo" in parts:
+                return "系統導覽"
+            if "hant" in parts:
+                return "系統操作機制"
+            return "系统导航"
+        if language == "sr" and "latn" in parts:
+            return "Navigacija kroz sistem"
+
+        # AOSP 没有该语言资源时 Settings 也会回退到默认英文资源。
+        return _SYSTEM_NAVIGATION_TITLES.get(language, "System navigation")
+
     def open_navigation_settings(self):
         """打开系统导航方式入口。
 
         AOSP 的导航方式选择页是 Settings 内部、未导出的 SubSettings fragment，
         shell UID 不能直接启动。优先尝试厂商可能提供的直达 action；否则使用
-        Android Settings 搜索并预填“系统导航”，由受信任的搜索组件完成跳转。
+        Android Settings 搜索并按设备 Locale 预填本地化标题，由受信任的搜索组件
+        完成跳转。
         """
         self.check_device()
 
@@ -1082,12 +1200,14 @@ class ADBHelper:
 
         search_action = "android.settings.APP_SEARCH_SETTINGS"
         if self._resolve_activity_action(search_action):
+            locale = self._get_device_locale()
+            query = self._navigation_search_query(locale)
             success, output = self.execute_adb_command([
                 "adb", "shell", "am", "start", "-W", "-a", search_action,
-                "--es", "query", _device_sh_quote("系统导航"),
+                "--es", "query", _device_sh_quote(query),
             ])
             if success:
-                return True, "已打开设置搜索并定位“系统导航”，请点击搜索结果进入选择页"
+                return True, f"已按设备语言（{locale}）搜索“{query}”，请点击搜索结果进入选择页"
             return False, output
 
         return False, "设备未提供可用的系统导航设置入口或 Settings 搜索组件"
