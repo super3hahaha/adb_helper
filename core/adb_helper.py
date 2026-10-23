@@ -1326,13 +1326,84 @@ class ADBHelper:
     def reset_battery(self):
         self.execute_adb_command(["adb", "shell", "dumpsys", "battery", "reset"])
 
+    @staticmethod
+    def _parse_phone_contacts(output):
+        """解析 contacts provider 的姓名/号码查询结果。"""
+        contacts = []
+        seen = set()
+        for line in (output or "").splitlines():
+            # 指定 projection 后通常形如：
+            # Row: 0 display_name=张三, data1=138 0013 8000
+            # 电话号码底层列是 data1；Pixel 等设备不接受别名 number 作为投影列。
+            # 姓名允许包含逗号，所以从最后一个 `, data1=` 切分。
+            match = re.search(r"display_name=(.*),\s*data1=(.*)$", line)
+            if not match:
+                continue
+            name = match.group(1).strip()
+            number = match.group(2).strip()
+            if not number or number == "NULL":
+                continue
+            key = (name, number)
+            if key in seen:
+                continue
+            seen.add(key)
+            contacts.append({"name": name or "未命名联系人", "number": number})
+        contacts.sort(key=lambda item: (item["name"].lower(), item["number"]))
+        return contacts
+
+    def get_phone_contacts(self):
+        """获取设备通讯录中的联系人姓名和电话号码。"""
+        self.check_device()
+        success, output = self.execute_adb_command([
+            "adb", "shell", "content", "query",
+            "--uri", "content://com.android.contacts/data/phones",
+            "--projection", "display_name:data1",
+        ])
+        if not success or not output:
+            return []
+        return self._parse_phone_contacts(output)
+
     def sim_incoming_call(self):
-        self.execute_adb_command([
+        """发送项目原有的 RINGING 测试广播（实体机兼容路径）。"""
+        success, output = self.execute_adb_command([
             "adb", "shell",
             "am", "broadcast",
             "-a", "android.intent.action.TEST",
             "--es", "state", "RINGING",
         ])
+        if not success:
+            return False, output or "来电测试广播发送失败"
+        return True, "已发送 RINGING 测试广播"
+
+    def sim_contact_incoming_call(self, phone_number):
+        """模拟指定号码来电；模拟器走虚拟基带，实体机走测试广播。"""
+        phone_number = (phone_number or "").strip()
+        device_id = self.active_device_id or ""
+        # adb shell 会重新解析参数，格式化号码里的空格/括号可能把 --es 的值拆散；
+        # 统一保留数字和开头的国际区号 +，也更利于系统通讯录做号码匹配。
+        normalized = re.sub(r"[^0-9+]", "", phone_number)
+        if normalized.count("+") > 1 or ("+" in normalized and not normalized.startswith("+")):
+            normalized = normalized.replace("+", "")
+        if not normalized:
+            return False, "请先选择联系人或输入来电号码"
+        if device_id.startswith("emulator-"):
+            success, output = self.execute_adb_command([
+                "adb", "emu", "gsm", "call", normalized,
+            ])
+            if not success:
+                return False, output or "模拟器来电命令执行失败"
+            return True, f"已从 {phone_number} 向模拟器发起系统来电"
+
+        success, output = self.execute_adb_command([
+            "adb", "shell",
+            "am", "broadcast",
+            "-a", "android.intent.action.TEST",
+            "--es", "state", "RINGING",
+            "--es", "incoming_number", normalized,
+        ])
+        if not success:
+            return False, output or "联系人来电测试广播发送失败"
+        return True, f"已发送联系人来电测试广播，来电号码：{normalized}"
 
     # --- Logcat ---
     def start_logcat(self, log_level="E"):

@@ -4,6 +4,18 @@
 
 ## ADB
 
+### 模拟联系人来电：模拟器和实体机不是同一种能力
+
+Android Emulator 支持 `adb emu gsm call <号码>`，命令进入虚拟基带，系统会像真实来电一样
+显示拨号界面，并按通讯录号码解析联系人姓名。号码来自
+`content://com.android.contacts/data/phones`，查询投影要用 `display_name:data1`；Pixel 等设备会拒绝
+`number` 别名并报 `Invalid column number`。同一联系人有多个号码时要分别展示，不能只按姓名去重。
+
+实体 Android 设备没有通用 ADB 命令可向系统电话框架注入真实来电，但项目的被测 App 支持
+`android.intent.action.TEST` 测试广播。因此保留两个入口：普通“模拟来电”只携带
+`state=RINGING`；“联系人来电”额外携带标准键 `incoming_number=<号码>`，由被测 App 解析。
+不要改发 `android.intent.action.PHONE_STATE`：它是受保护的系统广播，shell 不能可靠伪造。
+
 ### 系统导航方式入口由设备设置应用决定
 
 不要把 `com.android.settings.NAVIGATION_MODE_SETTINGS` 当成 AOSP 标准 action。Pixel 4 / Android 13 实测无处理者；目标页实际是 `com.android.settings.gestures.SystemNavigationGestureSettings`，承载于未导出的 `com.android.settings/.SubSettings`，shell UID 直启会被 `SecurityException` 拒绝。

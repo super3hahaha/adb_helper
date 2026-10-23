@@ -257,9 +257,46 @@ class ToolsTab(ctk.CTkFrame):
         frame_call = ctk.CTkFrame(self.container_simulation)
         frame_call.pack(pady=2, padx=10, fill="x")
 
-        ctk.CTkLabel(frame_call, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(pady=(2, 1), anchor="w", padx=8)
+        call_header = ctk.CTkFrame(frame_call, fg_color="transparent")
+        call_header.pack(pady=(2, 1), padx=8, fill="x")
+        ctk.CTkLabel(call_header, text="来电模拟", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self.call_help_btn = ctk.CTkButton(
+            call_header, text="?", width=22, height=22, corner_radius=11,
+            fg_color="gray50", hover_color="gray40", command=lambda: None,
+        )
+        self.call_help_btn.pack(side="left", padx=(5, 0))
+        ModernTooltip(self.call_help_btn, sections=[
+            ("来电模拟原理",
+             "通过 ADB 向设备发送测试广播，模拟电话处于 RINGING 状态。\n"
+             "• 模拟来电：只发送来电状态。\n"
+             "• 联系人来电：同时携带所选联系人的电话号码，由被测 App 读取并显示联系人信息。"),
+            ("开发接入",
+             "请开发仅在测试包的来电接收器中保留以下模拟来电入口：\n"
+             '<action android:name="android.intent.action.TEST" />\n'
+             "该广播未受系统权限保护，第三方 App 也可能触发来电页面，因此只能保留在测试包中，正式包必须移除或禁用。"),
+            ("与真实来电的区别",
+             "该功能只是向被测 App 发送测试广播，并不是真正由运营商或 Android 电话框架产生的来电。"),
+            ("已知局限",
+             "• 即使没有授予“默认来电显示应用”相关权限，模拟联系人来电仍可能显示联系人姓名和电话号码；真实来电在相同权限条件下可能只显示“未知”。\n"
+             "• 设备锁屏时，模拟来电无法正常唤起或显示来电页面。\n"
+             "• 不会产生真实通话，也不能完整模拟接听、挂断、通话音频及运营商网络状态。\n"
+             "• 不同 Android 版本、厂商系统和被测 App 的响应结果可能不同。"),
+            ("使用建议",
+             "此功能适合快速验证来电状态下的 UI 和业务逻辑，不能完全替代真实来电测试。"),
+        ], max_width=520)
 
-        ctk.CTkButton(frame_call, text="模拟来电 (RINGING)", height=sim_btn_h, command=self.adb_helper.sim_incoming_call).pack(pady=(1, 2), padx=8, fill="x")
+        row_call = ctk.CTkFrame(frame_call, fg_color="transparent")
+        row_call.pack(pady=(1, 2), padx=8, fill="x")
+        self.btn_sim_incoming_call = ctk.CTkButton(
+            row_call, text="模拟来电 (RINGING)", height=sim_btn_h,
+            command=self.action_sim_incoming_call,
+        )
+        self.btn_sim_incoming_call.pack(side="left", expand=True, fill="x", padx=(0, 2))
+        self.btn_sim_contact_call = ctk.CTkButton(
+            row_call, text="联系人来电", height=sim_btn_h,
+            command=self.action_sim_contact_call,
+        )
+        self.btn_sim_contact_call.pack(side="right", expand=True, fill="x", padx=(2, 0))
 
         # 3. 网络模拟
         frame_net = ctk.CTkFrame(self.container_simulation)
@@ -1471,6 +1508,63 @@ class ToolsTab(ctk.CTkFrame):
             except Exception as e:
                 self.log(f"读取通讯录异常: {e}", "ERROR")
                 self.after(0, lambda: self.btn_contact_ringtone.configure(state="normal", text="试听联系人铃声"))
+
+        self.adb_helper.spawn(_thread)
+
+    def action_sim_incoming_call(self):
+        """使用历史兼容命令发送 RINGING 测试广播。"""
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+
+        self.btn_sim_incoming_call.configure(state="disabled", text="正在模拟...")
+        dev = self.adb_helper.current_device_id
+
+        def _thread():
+            try:
+                with self.adb_helper.bind_device(dev):
+                    success, msg = self.adb_helper.sim_incoming_call()
+                self.log(msg, "SUCCESS" if success else "ERROR")
+            except Exception as exc:
+                self.log(f"模拟来电异常: {exc}", "ERROR")
+            finally:
+                self.after(0, lambda: self.btn_sim_incoming_call.configure(
+                    state="normal", text="模拟来电 (RINGING)"
+                ))
+
+        self.adb_helper.spawn(_thread)
+
+    def action_sim_contact_call(self):
+        """读取联系人号码，并按设备类型模拟带号码的来电。"""
+        if not self.adb_helper.current_device_id:
+            messagebox.showwarning("提示", "请先选择一个设备", parent=self)
+            return
+        dev = self.adb_helper.current_device_id
+
+        self.btn_sim_contact_call.configure(state="disabled", text="正在读取通讯录...")
+
+        def _thread():
+            contacts = []
+            error = None
+            try:
+                with self.adb_helper.bind_device(dev):
+                    contacts = self.adb_helper.get_phone_contacts()
+            except Exception as exc:
+                error = str(exc)
+
+            def _show_dialog():
+                self.btn_sim_contact_call.configure(state="normal", text="联系人来电")
+                if error:
+                    self.log(f"读取联系人号码失败，将使用手动号码输入：{error}", "WARNING")
+                elif contacts:
+                    self.log(f"成功获取 {len(contacts)} 个联系人号码", "SUCCESS")
+                else:
+                    self.log("未读取到联系人号码，可在弹窗中手动输入", "WARNING")
+
+                from ui.components.contact_selector import IncomingCallDialog
+                IncomingCallDialog(self, self.adb_helper, contacts, dev, self.log)
+
+            self.after(0, _show_dialog)
 
         self.adb_helper.spawn(_thread)
 

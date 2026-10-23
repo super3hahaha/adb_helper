@@ -32,7 +32,7 @@ adb_helper/
 │   │   ├── logcat_window.py     # Logcat 实时日志窗口（含自定义过滤词快捷标签）
 │   │   ├── file_manager_window.py  # 设备文件管理器
 │   │   ├── firebase_window.py   # Firebase 事件监控窗口
-│   │   ├── contact_selector.py  # 联系人选择对话框
+│   │   ├── contact_selector.py  # 联系人铃声与模拟来电联系人选择对话框
 │   │   ├── screen_info_dialog.py # 屏幕信息弹窗（分辨率/密度/insets/cutout）
 │   │   └── wireless_manager_window.py # 无线设备管理（多台并存：多选断开 / 重连已保存设备）
 │   └── windows/             # 独立功能窗口
