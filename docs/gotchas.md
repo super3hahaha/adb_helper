@@ -4,6 +4,45 @@
 
 ## ADB
 
+### ADB Keyboard：不能只看 `ime set` 的退出码
+
+Android 17 实测：输入法包被系统标成 `disabled-user` 后，
+`settings get secure default_input_method` 仍可能残留 `com.android.adbkeyboard/.AdbIME`，但
+`ime set` 会输出 `Unknown input method ... cannot be selected`，同时 shell exit code 依旧是 0。
+因此发送前要检查 `pm list packages -d` 并用 `pm enable` 恢复包，再依次执行
+`ime enable`、`ime set`，同时检查命令文本并复查当前输入法，不能仅凭 returncode 判断成功。
+
+内置 APK 的广播接收器由输入法服务动态注册，不在 Manifest 中；包被停用或输入法未绑定时，
+`am broadcast` 仍可能显示 `Broadcast completed: result=0`，这只代表广播命令执行结束，不代表
+文本已提交。多语言、引号和换行统一走兼容 APK 的 `ADB_INPUT_B64_ACK`，避免设备 shell 改写文本。
+
+旧内置 APK 还有一层 Android 17 兼容问题：`InputMethodService` 的 Manifest 是
+`android:exported="false"`，系统因此不会把它列进 `ime list -s`。当前资源 APK 基于上游
+`senzhk/ADBKeyBoard` 的 `v2.5-dev`（含 Android 16 动态 Receiver 修复），把该 Service 改为
+`exported="true"`，并为 Base64 输入增加同步结果码后重新构建，SHA-256 为
+`01315d4532cdd7de48af71b7dab55f6d04ff95589d3e8fa564a25d02dcacc454`。由于签名不同，检测到
+“包已安装但 IME 组件不可见”时会卸载旧辅助包，再安装内置兼容版；该包只承载测试输入法。
+
+安装返回 `Success` 后，InputMethodManager 对新 IME 的索引仍是异步的；实测立刻执行 `ime enable`
+会短暂报 `unrecognized IME ID`，稍后同一命令即可成功。因此安装后要轮询 `ime list -a -s`。
+同理，`ime set` 成功后服务绑定和进程启动也可能滞后；发送广播前要等 `pidof` 能看到输入法进程。
+若当前没有激活可编辑输入框，进程可能一直不启动，此时应明确提示用户点击输入框，不能记录成已发送。
+此外，`ime list -s` 末尾的 `-s` 是“summary”，不是 ADB 的设备选择器；通用命令注入逻辑只能把
+紧跟在 `adb` 后面的 `-s <serial>` 当设备参数，否则多设备时会漏注入序列号并查询到错误设备。
+
+稳态发送不能每次重复跑包、停用状态、IME 列表和默认输入法检查。兼容 APK versionCode 6 新增
+`ADB_INPUT_B64_ACK`（旧 APK 不识别，避免乐观探测时误输入两遍），找到有效 `InputConnection`
+并调用 `commitText()` 后为 ordered broadcast 设置
+`result=-1`（不能依赖 `commitText()` 的布尔返回值，部分 App 实际接收文本却返回 false）。主程序
+每次都先乐观发送这一条广播，因此应用刚重启也仍是单命令；若返回不是 -1，才完整自愈并重试。
+按设备缓存仅用于 UI 判断是否需要显示首次准备提示。UI 的首次
+准备弹窗只读内存缓存，禁止为显示弹窗再额外执行一次 `pm list packages`。
+进程 PID 会略早于 `onCreate()` 完成动态 Receiver 注册，首次准备在看到 PID 后额外稳定 200ms；
+否则刚升级/切换后的第一条广播可能暂时得到 `result=0`。
+覆盖安装还会杀掉旧 IME 进程但保留 `default_input_method`；若设置显示已选中而 PID 仍不存在，
+先重跑一次 `ime set` 尝试触发绑定。部分 App 的旧 InputConnection 已失效，系统仍不会重绑，
+此时明确提示用户重新点击一次可编辑输入框；这是 APK 升级后的单次迁移现象。
+
 ### 模拟联系人来电：模拟器和实体机不是同一种能力
 
 Android Emulator 支持 `adb emu gsm call <号码>`，命令进入虚拟基带，系统会像真实来电一样
@@ -14,6 +53,8 @@ Android Emulator 支持 `adb emu gsm call <号码>`，命令进入虚拟基带�
 实体 Android 设备没有通用 ADB 命令可向系统电话框架注入真实来电，但项目的被测 App 支持
 `android.intent.action.TEST` 测试广播。因此保留两个入口：普通“模拟来电”只携带
 `state=RINGING`；“联系人来电”额外携带标准键 `incoming_number=<号码>`，由被测 App 解析。
+这类广播不会触发系统电话框架，因此不会自动播放来电铃声或产生来电震动；需要更接近真实电话
+链路的测试时使用 Android Emulator 的 `adb emu gsm call <号码>`。
 不要改发 `android.intent.action.PHONE_STATE`：它是受保护的系统广播，shell 不能可靠伪造。
 
 ### 系统导航方式入口由设备设置应用决定

@@ -1,3 +1,4 @@
+import base64
 import subprocess
 import threading
 import sys
@@ -127,6 +128,9 @@ class ADBHelper:
         # 用于拔线后把 UI 的选中项跟到同一台设备的无线 entry 上（多设备下
         # 不能简单 fallback 到列表第一台，否则会静默跳到别人的机器上）
         self.wireless_addr_by_serial = {}
+        # ADB Keyboard 已完成安装/启用/绑定，且至少成功确认过一次广播的设备。
+        # 稳态发送只需一条带 ACK 的广播；失败时丢弃缓存并自动重做完整准备。
+        self._adb_keyboard_ready_devices = set()
         # adb server 是否已确认在运行（见 _ensure_adb_server）
         self._adb_server_ready = False
         self._adb_server_lock = threading.Lock()
@@ -646,7 +650,10 @@ class ADBHelper:
                     self.check_device()
                     # 假设 cmd_list 是 ["adb", "shell", "ls"]
                     # 注入后变为 ["adb", "-s", "device_id", "shell", "ls"]
-                    if cmd_list[0] == self.adb_cmd and "-s" not in cmd_list:
+                    # 只看 adb 后面的全局选项位置。子命令也可能合法使用 `-s`
+                    #（例如 `ime list -s`、`logcat -s TAG`），不能在整条参数里搜索。
+                    has_device_selector = len(cmd_list) >= 3 and cmd_list[1] == "-s"
+                    if cmd_list[0] == self.adb_cmd and not has_device_selector:
                         cmd_list.insert(1, "-s")
                         cmd_list.insert(2, self.active_device_id)
                 except NoDeviceConnectedError as e:
@@ -1214,42 +1221,175 @@ class ADBHelper:
 
     ADB_KB_PKG = "com.android.adbkeyboard"
     ADB_KB_IME = f"{ADB_KB_PKG}/.AdbIME"
+    ADB_KB_VERSION_CODE = 6
+
+    @staticmethod
+    def _ime_command_succeeded(success, output):
+        """`ime enable/set` 某些失败仍返回 exit code 0，必须同时检查文本。"""
+        if not success:
+            return False
+        output_lower = (output or "").lower()
+        return not any(marker in output_lower for marker in (
+            "unknown input method",
+            "cannot be selected",
+            "error:",
+            "exception",
+        ))
+
+    def _is_adb_keyboard_available(self):
+        """检查系统是否已把 APK 索引为可用输入法（包括尚未启用的 IME）。"""
+        _, available = self.execute_adb_command([
+            "adb", "shell", "ime", "list", "-a", "-s"
+        ])
+        return self.ADB_KB_IME in (available or "").splitlines()
+
+    def _wait_for_adb_keyboard_available(self, timeout=5):
+        """安装完成广播是异步的；等待 InputMethodManager 刷新输入法列表。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._is_adb_keyboard_available():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+
+    def _wait_for_adb_keyboard_process(self, timeout=5):
+        """等待 IME 服务完成绑定；动态广播接收器只有进程启动后才存在。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._shell_silent(["shell", "pidof", self.ADB_KB_PKG]):
+                # pid 出现略早于 InputMethodService.onCreate() 完成动态 Receiver 注册。
+                # 仅首次/自愈路径等待一次；稳态缓存路径不会经过这里。
+                time.sleep(0.2)
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
 
     def _install_adb_keyboard(self):
         """确保 ADB Keyboard 已安装，返回是否安装成功"""
-        _, output = self.execute_adb_command(["adb", "shell", "pm", "list", "packages", self.ADB_KB_PKG])
+        _, output = self.execute_adb_command([
+            "adb", "shell", "pm", "list", "packages", "--show-versioncode", self.ADB_KB_PKG
+        ])
         if self.ADB_KB_PKG in (output or ""):
-            return True
+            version_match = re.search(r"versionCode:(\d+)", output or "")
+            installed_version = int(version_match.group(1)) if version_match else 0
+            if installed_version < self.ADB_KB_VERSION_CODE:
+                apk_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "resources", "ADBKeyboard.apk"
+                )
+                self.log("正在升级 ADB Keyboard 的广播确认协议...", "INFO")
+                upgraded, msg = self.execute_adb_command(
+                    ["adb", "install", "-r", apk_path], timeout=self.INSTALL_TIMEOUT
+                )
+                if upgraded and self._wait_for_adb_keyboard_available():
+                    return True
+                # 旧官方包与内置兼容版签名不同，无法覆盖安装时迁移辅助包。
+                removed, remove_msg = self.execute_adb_command(["adb", "uninstall", self.ADB_KB_PKG])
+                if not removed:
+                    self.log(f"ADB Keyboard 升级失败: {msg or remove_msg}", "ERROR")
+                    return False
+                output = ""
+
+        if self.ADB_KB_PKG in (output or ""):
+            # 新系统可能把长期未使用/由用户关闭的输入法包标为 disabled-user。
+            # 此时 settings 里的 default_input_method 仍会残留旧值，但 ime set 会输出
+            # "Unknown input method" 且退出码仍为 0，后续广播也不会有接收者。
+            _, disabled = self.execute_adb_command([
+                "adb", "shell", "pm", "list", "packages", "-d", self.ADB_KB_PKG
+            ])
+            if self.ADB_KB_PKG in (disabled or ""):
+                enabled, msg = self.execute_adb_command([
+                    "adb", "shell", "pm", "enable", self.ADB_KB_PKG
+                ])
+                if not enabled:
+                    self.log(f"ADB Keyboard 已安装但无法重新启用: {msg}", "ERROR")
+                    return False
+                self.log("ADB Keyboard 已被系统停用，现已重新启用", "INFO")
+
+            # Android 17 不再把 exported=false 的旧版 InputMethodService 列为可用输入法。
+            # 项目此前内置的 APK 正是这个版本；包名虽然存在，ime list 却看不到组件。
+            if self._wait_for_adb_keyboard_available(timeout=2):
+                return True
+
+            self.log("检测到旧版 ADB Keyboard 与当前系统不兼容，正在迁移兼容版", "INFO")
+            removed, msg = self.execute_adb_command(["adb", "uninstall", self.ADB_KB_PKG])
+            if not removed:
+                self.log(f"无法移除不兼容的 ADB Keyboard: {msg}", "ERROR")
+                return False
 
         apk_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "ADBKeyboard.apk")
         if not os.path.exists(apk_path):
             self.log("ADB Keyboard APK 文件不存在，无法自动安装", "ERROR")
             return False
-        self.log("首次发送文本，正在自动安装 ADB Keyboard...", "INFO")
+        self.log("正在自动安装 ADB Keyboard...", "INFO")
         success, msg = self.execute_adb_command(["adb", "install", apk_path], timeout=self.INSTALL_TIMEOUT)
         if not success:
             self.log(f"ADB Keyboard 安装失败: {msg}", "ERROR")
             return False
+        if not self._wait_for_adb_keyboard_available():
+            self.log("ADB Keyboard 已安装，但系统未在限定时间内识别到输入法组件", "ERROR")
+            return False
         self.log("ADB Keyboard 安装成功", "SUCCESS")
         return True
 
+    def is_adb_keyboard_ready_cached(self):
+        """供 UI 判断是否需要显示首次准备提示，不触发任何 ADB 命令。"""
+        return self.active_device_id in self._adb_keyboard_ready_devices
+
+    def _broadcast_adb_keyboard_text(self, text):
+        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        success, output = self.execute_adb_command([
+            "adb", "shell", "am", "broadcast",
+            "-a", "ADB_INPUT_B64_ACK", "-p", self.ADB_KB_PKG,
+            "--es", "msg", encoded,
+        ])
+        if not success:
+            return False, output
+        if re.search(r"\bresult=-1\b", output or ""):
+            return True, output
+        return False, "ADB Keyboard 未确认文本已提交"
+
     def _is_adb_keyboard_active(self):
         """检查当前输入法是否为 ADB Keyboard"""
+        _, available_imes = self.execute_adb_command(["adb", "shell", "ime", "list", "-s"])
+        if self.ADB_KB_IME not in (available_imes or "").splitlines():
+            return False
         _, current_ime = self.execute_adb_command(["adb", "shell", "settings", "get", "secure", "default_input_method"])
-        return self.ADB_KB_IME in (current_ime or "").strip()
+        return (current_ime or "").strip() == self.ADB_KB_IME
 
     def _try_switch_to_adb_keyboard(self):
         """尝试自动切换到 ADB Keyboard，返回是否成功"""
-        success, _ = self.execute_adb_command(["adb", "shell", "ime", "set", self.ADB_KB_IME])
-        if success:
-            return True
-        success, _ = self.execute_adb_command(["adb", "shell", "settings", "put", "secure", "default_input_method", self.ADB_KB_IME])
-        return success
+        success, output = self.execute_adb_command([
+            "adb", "shell", "ime", "enable", self.ADB_KB_IME
+        ])
+        if not self._ime_command_succeeded(success, output):
+            return False
+
+        success, output = self.execute_adb_command([
+            "adb", "shell", "ime", "set", self.ADB_KB_IME
+        ])
+        if not self._ime_command_succeeded(success, output):
+            return False
+
+        # 不再用 settings put 伪造默认值；它可能写成功但 InputMethodManager 根本没绑定。
+        return self._is_adb_keyboard_active()
 
     def send_text(self, text):
         """通过 ADB Keyboard 广播发送文本，支持所有语言"""
         if not text:
             return False, "Empty text"
+
+        device_id = self.active_device_id
+        # 乐观快路径：即使应用刚重启也先发唯一一条带 ACK 的广播。设备状态正常时
+        # 到这里就结束；只有 receiver/输入连接不存在时才进入下面的完整自愈。
+        success, message = self._broadcast_adb_keyboard_text(text)
+        if success:
+            if device_id:
+                self._adb_keyboard_ready_devices.add(device_id)
+            return True, message
+        self._adb_keyboard_ready_devices.discard(device_id)
 
         # 1. 确保已安装
         if not self._install_adb_keyboard():
@@ -1268,12 +1408,19 @@ class ADBHelper:
                 self.execute_adb_command(["adb", "shell", "am", "start", "-a", "android.settings.INPUT_METHOD_SETTINGS"])
                 return False, "需要手动切换到 ADB Keyboard"
 
-        # 3. 通过广播发送文本
-        safe_text = text.replace("'", "'\\''")
-        return self.execute_adb_command([
-            "adb", "shell",
-            f"am broadcast -a ADB_INPUT_TEXT --es msg '{safe_text}'"
-        ])
+        # 新装/刚切换后 InputMethodManager 的绑定是异步的。接收器在 IME 进程的
+        # onCreate 中动态注册；进程没起来时 am broadcast 仍会返回 result=0，但无人接收。
+        if not self._wait_for_adb_keyboard_process(timeout=0.5):
+            # 覆盖安装会杀掉 IME 进程，却保留 default_input_method 设置；此时上面的
+            # active 检查为真，但系统不会立刻重绑。主动 set 一次触发重新绑定。
+            if not self._try_switch_to_adb_keyboard() or not self._wait_for_adb_keyboard_process():
+                return False, "ADB Keyboard 已切换，但输入法服务尚未绑定；请先点击一个可编辑输入框后重试"
+
+        # 3. Base64 广播避免设备 shell 改写文本；APK 仅在 commitText 成功后返回 -1。
+        success, message = self._broadcast_adb_keyboard_text(text)
+        if success and device_id:
+            self._adb_keyboard_ready_devices.add(device_id)
+        return success, message
 
     def send_raw_text(self, text):
         """通过 adb shell input text 模拟按键输入（仅支持 ASCII）"""

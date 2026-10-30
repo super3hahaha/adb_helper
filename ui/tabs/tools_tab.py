@@ -279,6 +279,7 @@ class ToolsTab(ctk.CTkFrame):
             ("已知局限",
              "• 即使没有授予“默认来电显示应用”相关权限，模拟联系人来电仍可能显示联系人姓名和电话号码；真实来电在相同权限条件下可能只显示“未知”。\n"
              "• 设备锁屏时，模拟来电无法正常唤起或显示来电页面。\n"
+             "• 模拟来电不会触发系统电话框架，因此不会自动播放来电铃声或产生来电震动。真实一些的测试可以使用 Android Emulator。\n"
              "• 不会产生真实通话，也不能完整模拟接听、挂断、通话音频及运营商网络状态。\n"
              "• 不同 Android 版本、厂商系统和被测 App 的响应结果可能不同。"),
             ("使用建议",
@@ -968,12 +969,10 @@ class ToolsTab(ctk.CTkFrame):
             messagebox.showwarning("提示", "请输入要发送的文本", parent=self)
             return
 
-        # 检查是否需要安装 ADB Keyboard（首次使用时弹出提示）
-        _, output = self.adb_helper.execute_adb_command(["adb", "shell", "pm", "list", "packages", self.adb_helper.ADB_KB_PKG])
-        need_install = self.adb_helper.ADB_KB_PKG not in (output or "")
-
+        # 不为弹窗额外查询一次设备；本进程首次准备时显示，后续发送只走一条广播。
+        needs_prepare = not self.adb_helper.is_adb_keyboard_ready_cached()
         loading_dialog = None
-        if need_install:
+        if needs_prepare:
             loading_dialog = ctk.CTkToplevel(self)
             loading_dialog.title("请稍候")
             loading_dialog.geometry("300x100")
@@ -984,12 +983,15 @@ class ToolsTab(ctk.CTkFrame):
             x = self.winfo_rootx() + (self.winfo_width() // 2) - 150
             y = self.winfo_rooty() + (self.winfo_height() // 2) - 50
             loading_dialog.geometry(f"+{x}+{y}")
-            ctk.CTkLabel(loading_dialog, text="正在安装 ADB Keyboard...\n首次使用需要安装，请稍候", font=ctk.CTkFont(size=13)).pack(expand=True)
+            ctk.CTkLabel(loading_dialog, text="正在准备 ADB Keyboard...\n首次使用或状态变化时需要检查", font=ctk.CTkFont(size=13)).pack(expand=True)
 
         def _thread():
             try:
-                self.adb_helper.send_text(text)
-                self.log(f"已发送文本: {text}", "SUCCESS")
+                success, message = self.adb_helper.send_text(text)
+                if success:
+                    self.log(f"已发送文本: {text}", "SUCCESS")
+                else:
+                    self.log(f"文本发送失败: {message}", "ERROR")
             except Exception as e:
                 self.log(f"发送文本异常: {e}", "ERROR")
             finally:
