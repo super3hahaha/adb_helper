@@ -43,6 +43,12 @@ Android 17 实测：输入法包被系统标成 `disabled-user` 后，
 先重跑一次 `ime set` 尝试触发绑定。部分 App 的旧 InputConnection 已失效，系统仍不会重绑，
 此时明确提示用户重新点击一次可编辑输入框；这是 APK 升级后的单次迁移现象。
 
+Android 7 的 `pm list packages --show-versioncode` 不受支持，会漏掉已经安装的同包名旧版 APK；
+如果接着按首次安装执行 `adb install`，会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。安装检查必须回退到
+不带该参数的 `pm list packages <包名>`；最终安装若仍命中该错误，也要卸载旧辅助包后重装兼容版。
+安装失败时的 ASCII 降级路径同样经过设备端 sh，多行文本必须整体用 `_device_sh_quote()` 引用，
+否则换行后的每个段落都会被 Android 7 当成独立命令执行并报 `not found`。
+
 ### 模拟联系人来电：模拟器和实体机不是同一种能力
 
 Android Emulator 支持 `adb emu gsm call <号码>`，命令进入虚拟基带，系统会像真实来电一样

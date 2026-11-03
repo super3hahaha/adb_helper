@@ -1271,6 +1271,14 @@ class ADBHelper:
         _, output = self.execute_adb_command([
             "adb", "shell", "pm", "list", "packages", "--show-versioncode", self.ADB_KB_PKG
         ])
+        if self.ADB_KB_PKG not in (output or ""):
+            # Android 7 的 pm 不支持 --show-versioncode；带这个参数时不会返回已安装包，
+            # 随后直接 install 会把“旧包签名不同”误判成首次安装失败。
+            _, legacy_output = self.execute_adb_command([
+                "adb", "shell", "pm", "list", "packages", self.ADB_KB_PKG
+            ])
+            if self.ADB_KB_PKG in (legacy_output or ""):
+                output = legacy_output
         if self.ADB_KB_PKG in (output or ""):
             version_match = re.search(r"versionCode:(\d+)", output or "")
             installed_version = int(version_match.group(1)) if version_match else 0
@@ -1325,6 +1333,16 @@ class ADBHelper:
             return False
         self.log("正在自动安装 ADB Keyboard...", "INFO")
         success, msg = self.execute_adb_command(["adb", "install", apk_path], timeout=self.INSTALL_TIMEOUT)
+        if not success and "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in (msg or ""):
+            # 厂商 ROM 的 pm 查询输出不完全一致，最后再按安装错误做一次兜底迁移。
+            self.log("检测到旧版 ADB Keyboard 签名不同，正在替换为兼容版", "INFO")
+            removed, remove_msg = self.execute_adb_command(["adb", "uninstall", self.ADB_KB_PKG])
+            if not removed:
+                self.log(f"无法移除旧版 ADB Keyboard: {remove_msg}", "ERROR")
+                return False
+            success, msg = self.execute_adb_command(
+                ["adb", "install", apk_path], timeout=self.INSTALL_TIMEOUT
+            )
         if not success:
             self.log(f"ADB Keyboard 安装失败: {msg}", "ERROR")
             return False
@@ -1393,8 +1411,9 @@ class ADBHelper:
 
         # 1. 确保已安装
         if not self._install_adb_keyboard():
-            text_escaped = text.replace(" ", "%s")
-            return self.execute_adb_command(["adb", "shell", "input", "text", text_escaped])
+            # 降级路径仍会经过设备端 sh；必须整体引用，尤其是换行，否则每一段会被
+            # Android 7 当成一条新命令执行并报 "not found"。
+            return self.send_raw_text(text)
 
         # 2. 如果不是当前输入法，尝试自动切换（只试一次，不阻塞）
         if not self._is_adb_keyboard_active():
@@ -1426,8 +1445,8 @@ class ADBHelper:
         """通过 adb shell input text 模拟按键输入（仅支持 ASCII）"""
         if not text:
             return False, "Empty text"
-        safe_text = text.replace("'", "'\\''")
-        return self.execute_adb_command(["adb", "shell", "input", "text", f"'{safe_text}'"])
+        safe_text = _device_sh_quote(text.replace(" ", "%s"))
+        return self.execute_adb_command(["adb", "shell", "input", "text", safe_text])
 
     def get_focused_input_text(self):
         """通过 uiautomator dump 读取当前界面输入框(EditText)的文本内容。

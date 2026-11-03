@@ -74,6 +74,53 @@ class AdbKeyboardTests(unittest.TestCase):
         self.assertIn(["adb", "uninstall", "com.android.adbkeyboard"], commands)
         self.assertEqual(commands[-1][1], "install")
 
+    def test_android_7_falls_back_when_pm_lacks_show_versioncode(self):
+        with patch.object(
+            self.helper,
+            "execute_adb_command",
+            side_effect=[
+                (False, "Error: Unknown option: --show-versioncode"),
+                (True, "package:com.android.adbkeyboard"),
+                (False, "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"),
+                (True, "Success"),
+                (True, "Success"),
+            ],
+        ) as execute, patch.object(
+            self.helper,
+            "_wait_for_adb_keyboard_available",
+            return_value=True,
+        ):
+            self.assertTrue(self.helper._install_adb_keyboard())
+
+        commands = [call.args[0] for call in execute.call_args_list]
+        self.assertEqual(
+            commands[1],
+            ["adb", "shell", "pm", "list", "packages", "com.android.adbkeyboard"],
+        )
+        self.assertIn(["adb", "uninstall", "com.android.adbkeyboard"], commands)
+
+    def test_direct_install_signature_mismatch_is_recovered(self):
+        with patch.object(
+            self.helper,
+            "execute_adb_command",
+            side_effect=[
+                (True, ""),
+                (True, ""),
+                (False, "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"),
+                (True, "Success"),
+                (True, "Success"),
+            ],
+        ) as execute, patch.object(
+            self.helper,
+            "_wait_for_adb_keyboard_available",
+            return_value=True,
+        ):
+            self.assertTrue(self.helper._install_adb_keyboard())
+
+        commands = [call.args[0] for call in execute.call_args_list]
+        self.assertEqual(commands[-2], ["adb", "uninstall", "com.android.adbkeyboard"])
+        self.assertEqual(commands[-1][1], "install")
+
     def test_switch_enables_then_selects_and_verifies(self):
         with (
             patch.object(
@@ -145,6 +192,29 @@ class AdbKeyboardTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("可编辑输入框", message)
         execute.assert_not_called()
+
+    def test_install_failure_fallback_quotes_multiline_text_for_device_shell(self):
+        text = "line one\nit's safe"
+        with (
+            patch.object(
+                self.helper,
+                "_broadcast_adb_keyboard_text",
+                return_value=(False, "no receiver"),
+            ),
+            patch.object(self.helper, "_install_adb_keyboard", return_value=False),
+            patch.object(
+                self.helper,
+                "execute_adb_command",
+                return_value=(True, ""),
+            ) as execute,
+        ):
+            success, _ = self.helper.send_text(text)
+
+        self.assertTrue(success)
+        self.assertEqual(
+            execute.call_args.args[0],
+            ["adb", "shell", "input", "text", "'line%sone\nit'\\''s%ssafe'"],
+        )
 
 
 if __name__ == "__main__":
